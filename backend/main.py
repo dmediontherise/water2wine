@@ -67,7 +67,8 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
     falling back across different cookie injection methods to bypass bot checks.
     Returns (returncode, stdout, stderr)
     """
-    ytdlp_path = os.path.join(os.path.dirname(sys.executable), "Scripts", "yt-dlp.exe")
+    import shutil
+    ytdlp_path = shutil.which("yt-dlp") or "yt-dlp"
     cookies_file = os.path.join(os.path.dirname(__file__), "cookies.txt")
 
     def fetch_with_args(browser=None, use_ios=True):
