@@ -79,10 +79,11 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
             cmd.extend(["--cookies-from-browser", browser])
             
         if use_ios:
-            cmd.extend(["--extractor-args", "youtube:player_client=ios,web,android"])
+            cmd.extend(["--extractor-args", "youtube:player_client=tv,ios,web,android"])
         else:
-            cmd.extend(["--extractor-args", "youtube:player_client=web,android"])
+            cmd.extend(["--extractor-args", "youtube:player_client=tv,web,android"])
             
+        cmd.extend(["--remote-components", "ejs:npm"])
         cmd.extend(["--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"])
         cmd.append(yt_url)
         
