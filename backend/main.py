@@ -20,6 +20,13 @@ for _p in [_scripts, _ffmpeg, _deno]:
     if _p and _p not in os.environ.get("PATH", ""):
         os.environ["PATH"] = _p + os.pathsep + os.environ.get("PATH", "")
 
+# Load Youtube Cookies for Production Bypass
+_cookies_env = os.environ.get("YOUTUBE_COOKIES")
+_cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
+if _cookies_env:
+    with open(_cookies_path, "w", encoding="utf-8") as f:
+        f.write(_cookies_env)
+
 # CORS Configuration
 allowed_origins = os.getenv("ALLOWED_ORIGIN", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173").split(",")
 app.add_middleware(
