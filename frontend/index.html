@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>water2wine - YouTube Converter</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1><i class="fas fa-wine-glass-alt"></i> water2wine</h1>
+            <p>Transform YouTube videos into pure quality.</p>
+        </div>
+    </header>
+
+    <main class="container">
+        <section class="input-section">
+            <div class="input-group">
+                <input type="text" id="video-url" placeholder="Paste YouTube URL here..." aria-label="YouTube URL">
+                <button id="fetch-info-btn">Analyze</button>
+            </div>
+        </section>
+
+        <section id="preview-section" class="preview-card hidden">
+            <div class="thumbnail-container">
+                <img id="video-thumbnail" src="" alt="Video Thumbnail">
+                <span id="video-duration" class="duration-badge">0:00</span>
+            </div>
+            <div class="video-details">
+                <h2 id="video-title">Video Title</h2>
+                <p id="video-channel"><i class="fas fa-user"></i> Channel Name</p>
+                
+                <div class="controls">
+                    <div class="control-group">
+                        <label for="format-select">Format</label>
+                        <select id="format-select">
+                            <option value="mp3">MP3 (Audio)</option>
+                            <option value="mp4">MP4 (Video)</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label for="quality-select">Quality</label>
+                        <select id="quality-select">
+                            <!-- Dynamically populated -->
+                        </select>
+                    </div>
+                </div>
+
+                <button id="download-btn" class="btn-primary">
+                    <i class="fas fa-download"></i> Download
+                </button>
+
+                <div id="progress-container" class="progress-container hidden">
+                    <div class="progress-bar-wrapper">
+                        <div id="progress-bar" class="progress-bar"></div>
+                    </div>
+                    <p id="progress-status">Starting download...</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2026 water2wine. Built with FastAPI and Vanilla JS.</p>
+            <div class="footer-links">
+                <a href="https://github.com/mrlgp/water2wine" target="_blank"><i class="fab fa-github"></i> GitHub</a>
+            </div>
+        </div>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>
