@@ -23,7 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const YOUTUBE_REGEX = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|shorts\/|live\/)|youtu\.be\/)[\w-]+/;
     const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
         ? 'http://localhost:8000'
-        : 'https://water2wine.onrender.com';
+        : 'https://youtube-converter-api-zy86.onrender.com';
     const INFO_TIMEOUT_MS = 5000;
 
     /**
