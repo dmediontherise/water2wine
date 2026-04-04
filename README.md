@@ -1,6 +1,6 @@
 # water2wine
 
-A simple, lightweight YouTube downloader that converts videos to MP3 or MP4 formats directly in your browser.
+A simple, lightweight downloader that converts videos to MP3 or MP4 formats directly in your browser.
 
 ## Features
 
