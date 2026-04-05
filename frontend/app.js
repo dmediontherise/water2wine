@@ -67,6 +67,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function validateUrl() {
         const url = videoUrlInput.value.trim();
         const valid = YOUTUBE_REGEX.test(url);
+        console.log('[validateUrl]', JSON.stringify(url), '→ valid:', valid);
         fetchInfoBtn.disabled = !valid;
         if (url.length > 5 && !valid) {
             inputHint.textContent = 'Hmm, that doesn\'t look like a YouTube link';
@@ -452,6 +453,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ── Event Listeners ──
     videoUrlInput.addEventListener('input', validateUrl);
+    videoUrlInput.addEventListener('change', validateUrl);
+    // Paste event fires before value updates — defer validation
+    videoUrlInput.addEventListener('paste', () => {
+        setTimeout(validateUrl, 0);
+    });
 
     // Enter key to analyze
     videoUrlInput.addEventListener('keydown', (e) => {
