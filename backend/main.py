@@ -204,6 +204,141 @@ async def get_info(request: Request, url: str = Query(...)):
             raise e
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}\n{error_trace}")
 
+@app.get("/api/info-stream")
+async def get_info_stream(request: Request, url: str = Query(...)):
+    """SSE endpoint that streams real-time progress during video analysis."""
+    check_rate_limit(request.client.host)
+    validate_url(url)
+
+    async def event_stream():
+        import shutil as _shutil
+
+        def send_event(event_type, data):
+            """Format an SSE event."""
+            payload = json.dumps(data)
+            return f"event: {event_type}\ndata: {payload}\n\n"
+
+        # Phase 1: Validate & initialize
+        yield send_event("progress", {"pct": 5, "msg": "Validating YouTube URL..."})
+        await asyncio.sleep(0.1)
+
+        yield send_event("progress", {"pct": 10, "msg": "Initializing yt-dlp engine..."})
+
+        ytdlp_path = _shutil.which("yt-dlp") or "yt-dlp"
+        cookies_file = os.path.join(os.path.dirname(__file__), "cookies.txt")
+        has_cookies = os.path.exists(cookies_file)
+
+        base_cmd = ["-J", "--no-playlist", "--flat-playlist"]
+
+        def build_and_run(use_cookies=True, player_client="web"):
+            cmd = [ytdlp_path] + base_cmd
+            if has_cookies and use_cookies:
+                cmd.extend(["--cookies", cookies_file])
+            cmd.extend(["--extractor-args", f"youtube:player_client={player_client}"])
+            deno_path = _shutil.which("deno")
+            if deno_path:
+                cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
+            else:
+                node_path = _shutil.which("node")
+                if node_path:
+                    cmd.extend(["--js-runtimes", f"node:{node_path}"])
+            cmd.extend(["--remote-components", "ejs:github"])
+            cmd.extend(["--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"])
+            cmd.append(url)
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+        result = None
+
+        # Phase 2: Try strategies with progress updates
+        if has_cookies:
+            yield send_event("progress", {"pct": 20, "msg": "Authenticating with YouTube..."})
+            result = await asyncio.to_thread(build_and_run, use_cookies=True, player_client="web")
+            if result.returncode == 0:
+                yield send_event("progress", {"pct": 70, "msg": "Extracting video metadata..."})
+            else:
+                yield send_event("progress", {"pct": 30, "msg": "Trying alternate client..."})
+                result = await asyncio.to_thread(build_and_run, use_cookies=True, player_client="web,tv")
+
+        if result is None or result.returncode != 0:
+            yield send_event("progress", {"pct": 40, "msg": "Contacting YouTube servers..."})
+            result = await asyncio.to_thread(build_and_run, use_cookies=False, player_client="ios,web,android")
+
+        if result.returncode != 0:
+            # Try browser cookies
+            for browser in ["chrome", "edge"]:
+                yield send_event("progress", {"pct": 55, "msg": f"Trying {browser} session..."})
+                try:
+                    cmd = [ytdlp_path] + base_cmd
+                    cmd.extend(["--cookies-from-browser", browser])
+                    cmd.extend(["--extractor-args", "youtube:player_client=ios,web,android"])
+                    deno_path = _shutil.which("deno")
+                    if deno_path:
+                        cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
+                    cmd.extend(["--remote-components", "ejs:github"])
+                    cmd.append(url)
+                    result = await asyncio.to_thread(lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=120))
+                    if result.returncode == 0:
+                        break
+                except Exception:
+                    pass
+
+        # Phase 3: Process result
+        if result.returncode != 0:
+            error_msg = result.stderr.strip()
+            if "Sign in to confirm you're not a bot" in error_msg:
+                yield send_event("error_event", {"detail": "YouTube bot detection active. Try again later."})
+            else:
+                yield send_event("error_event", {"detail": f"Analysis failed: {error_msg[:200]}"})
+            return
+
+        yield send_event("progress", {"pct": 80, "msg": "Parsing video information..."})
+        await asyncio.sleep(0.1)
+
+        try:
+            info = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            yield send_event("error_event", {"detail": "Failed to parse video data."})
+            return
+
+        duration = info.get("duration", 0)
+        if duration:
+            if duration >= 3600:
+                duration_formatted = time.strftime('%H:%M:%S', time.gmtime(duration))
+            else:
+                duration_formatted = time.strftime('%M:%S', time.gmtime(duration))
+        else:
+            duration_formatted = "0:00"
+
+        yield send_event("progress", {"pct": 95, "msg": "Resolving available formats..."})
+        await asyncio.sleep(0.1)
+
+        video_info = {
+            "title": info.get("title"),
+            "thumbnail": info.get("thumbnail"),
+            "duration": duration,
+            "duration_formatted": duration_formatted,
+            "channel": info.get("uploader"),
+            "formats": [
+                {"id": "mp3-192", "ext": "mp3", "quality": "192k", "size": int(duration * 192000 / 8) if duration else 0, "note": "Audio only"},
+                {"id": "mp4-1080", "ext": "mp4", "quality": "1080p", "size": int(duration * 5000000 / 8) if duration else 0, "note": "High Definition"},
+                {"id": "mp4-720", "ext": "mp4", "quality": "720p", "size": int(duration * 2500000 / 8) if duration else 0, "note": "Standard HD"},
+                {"id": "mp4-360", "ext": "mp4", "quality": "360p", "size": int(duration * 1000000 / 8) if duration else 0, "note": "Standard Definition"}
+            ]
+        }
+
+        yield send_event("progress", {"pct": 100, "msg": "Analysis complete!"})
+        yield send_event("complete", video_info)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
 @app.get("/api/download")
 async def download(request: Request, url: str = Query(...), format: str = Query(...), quality: str = Query(None), title: str = Query("video"), duration: float = Query(0)):
     check_rate_limit(request.client.host)

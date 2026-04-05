@@ -190,16 +190,95 @@ document.addEventListener('DOMContentLoaded', function() {
         downloadBtn.disabled = false;
     }
 
-    // ── Fetch Video Info ──
+    // ── Fetch Video Info (SSE real-time progress) ──
     function getInfo(url) {
-        showProcessing('Analyzing video...');
+        showProcessing('Connecting to server...');
         previewSection.classList.add('hidden');
+
+        var sseUrl = API_BASE + '/api/info-stream?url=' + encodeURIComponent(url);
+
+        // Try SSE first for real-time progress
+        if (typeof EventSource !== 'undefined') {
+            var source = new EventSource(sseUrl);
+            var completed = false;
+
+            source.addEventListener('progress', function(e) {
+                try {
+                    var data = JSON.parse(e.data);
+                    updateProcessing(data.pct, data.msg);
+                } catch (err) {
+                    // ignore parse errors
+                }
+            });
+
+            source.addEventListener('complete', function(e) {
+                completed = true;
+                source.close();
+                try {
+                    var info = JSON.parse(e.data);
+                    currentVideoInfo = info;
+                    completeProcessing();
+
+                    videoThumbnail.src = info.thumbnail;
+                    videoDuration.textContent = info.duration_formatted;
+                    videoTitle.textContent = info.title;
+
+                    videoChannel.textContent = '';
+                    var icon = document.createElement('i');
+                    icon.className = 'fas fa-user-circle';
+                    videoChannel.appendChild(icon);
+                    videoChannel.appendChild(document.createTextNode(' ' + info.channel));
+
+                    populateQualityOptions();
+
+                    setTimeout(function() {
+                        previewSection.classList.remove('hidden');
+                        hideAllProgress();
+                    }, 600);
+
+                    toast('Video analyzed successfully!', 'success');
+                } catch (err) {
+                    hideAllProgress();
+                    toast('Failed to parse video info', 'error', 6000);
+                }
+            });
+
+            source.addEventListener('error_event', function(e) {
+                completed = true;
+                source.close();
+                try {
+                    var data = JSON.parse(e.data);
+                    hideAllProgress();
+                    toast(data.detail || 'Analysis failed', 'error', 6000);
+                } catch (err) {
+                    hideAllProgress();
+                    toast('Analysis failed', 'error', 6000);
+                }
+            });
+
+            source.onerror = function() {
+                if (!completed) {
+                    source.close();
+                    // Fallback to regular fetch if SSE fails
+                    console.log('[water2wine] SSE failed, falling back to fetch');
+                    getInfoFallback(url);
+                }
+            };
+        } else {
+            // No EventSource support — use fetch fallback
+            getInfoFallback(url);
+        }
+    }
+
+    // Fallback: regular fetch (no real-time progress)
+    function getInfoFallback(url) {
+        showProcessing('Analyzing video...');
 
         var phases = [
             { delay: 2000, pct: 20, msg: 'Contacting YouTube...' },
-            { delay: 4000, pct: 45, msg: 'Extracting metadata...' },
-            { delay: 7000, pct: 65, msg: 'Resolving formats...' },
-            { delay: 10000, pct: 80, msg: 'Almost there...' }
+            { delay: 5000, pct: 45, msg: 'Extracting metadata...' },
+            { delay: 9000, pct: 65, msg: 'Resolving formats...' },
+            { delay: 14000, pct: 80, msg: 'Almost there...' }
         ];
         var timers = phases.map(function(p) {
             return setTimeout(function() { updateProcessing(p.pct, p.msg); }, p.delay);
@@ -253,28 +332,6 @@ document.addEventListener('DOMContentLoaded', function() {
     var isFirefox = /firefox/i.test(ua);
     var isMobile = isIOS || /Android/i.test(ua);
 
-    function getDownloadStrategy() {
-        if (isIOS) return 'native';
-        if (isSafari) return 'native';
-        if (isFirefox && isMobile) return 'blob';
-        if (typeof ReadableStream === 'undefined') return 'blob';
-        return 'stream';
-    }
-
-    function saveBlob(blob, filename) {
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(function() {
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        }, 5000);
-    }
-
     // ── Download ──
     function startDownload(url, format, quality) {
         lastDownloadParams = { url: url, format: format, quality: quality };
@@ -289,137 +346,54 @@ document.addEventListener('DOMContentLoaded', function() {
             '&format=' + format + '&quality=' + quality +
             '&title=' + encodeURIComponent(title) + '&duration=' + duration;
 
-        var strategy = getDownloadStrategy();
+        // Show processing spinner while server prepares
+        showProcessing('Sending request to server...');
 
-        // ─── Native strategy (Safari/iOS) ───
-        if (strategy === 'native') {
-            showProcessing('Preparing ' + format.toUpperCase() + ' download...');
-            var t1 = setTimeout(function() { updateProcessing(20, 'Connecting...'); }, 1500);
-            var t2 = setTimeout(function() { updateProcessing(50, 'Processing...'); }, 4000);
-
-            var iframe = document.createElement('iframe');
-            iframe.style.display = 'none';
-            iframe.src = downloadUrl;
-            document.body.appendChild(iframe);
-
-            setTimeout(function() {
-                var a = document.createElement('a');
-                a.href = downloadUrl;
-                a.download = filename;
-                a.style.display = 'none';
-                document.body.appendChild(a);
-                a.click();
-                setTimeout(function() { a.remove(); iframe.remove(); }, 10000);
-            }, 500);
-
-            clearTimeout(t1);
-            clearTimeout(t2);
-            completeProcessing();
-            toast("Download started! Check your browser's download bar.", 'success');
-            setTimeout(hideAllProgress, 3000);
-            return;
-        }
-
-        // ─── Fetch-based strategies (Stream / Blob) ───
-        showProcessing('Preparing ' + format.toUpperCase() + ' stream...');
-
-        var processingPhases = [
-            { delay: 1500, pct: 15, msg: 'Extracting stream URL...' },
-            { delay: 3500, pct: 35, msg: 'Resolving media sources...' },
-            { delay: 6000, pct: 55, msg: 'Starting conversion...' },
-            { delay: 9000, pct: 75, msg: 'Buffering stream...' }
+        var phases = [
+            { delay: 1500, pct: 15, msg: 'Server is extracting streams...' },
+            { delay: 4000, pct: 30, msg: 'Resolving media sources...' },
+            { delay: 8000, pct: 50, msg: 'Converting with ffmpeg...' },
+            { delay: 15000, pct: 70, msg: 'Processing... this may take a moment' },
+            { delay: 25000, pct: 85, msg: 'Still working... hang tight!' }
         ];
-        var timers = processingPhases.map(function(p) {
+        var timers = phases.map(function(p) {
             return setTimeout(function() { updateProcessing(p.pct, p.msg); }, p.delay);
         });
 
-        downloadAbortController = new AbortController();
+        // Trigger native browser download
+        // Method 1: Hidden iframe (most reliable cross-browser)
+        var iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        document.body.appendChild(iframe);
+        iframe.src = downloadUrl;
 
-        fetch(downloadUrl, { signal: downloadAbortController.signal })
-            .then(function(response) {
-                timers.forEach(clearTimeout);
-                if (!response.ok) {
-                    return response.text().then(function(body) {
-                        var errMsg = 'Download failed';
-                        try { errMsg = JSON.parse(body).detail || errMsg; } catch (e) { /* ignore */ }
-                        throw new Error(errMsg);
-                    });
-                }
+        // Method 2: Anchor click (backup for browsers that don't download via iframe)
+        setTimeout(function() {
+            var a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = filename;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(function() { a.remove(); }, 30000);
+        }, 500);
 
-                completeProcessing();
+        // Complete the processing bar after a short delay
+        // The actual download is handled by the browser natively
+        setTimeout(function() {
+            timers.forEach(clearTimeout);
+            completeProcessing();
+            updateProcessing(100, 'Download handed off to browser!');
+        }, 3000);
 
-                if (strategy === 'stream' && response.body && response.body.getReader) {
-                    // Stream strategy
-                    setTimeout(function() {
-                        progressProcessing.classList.add('hidden');
-                        showDownloadProgress();
-                    }, 400);
-
-                    var contentLength = parseInt(response.headers.get('Content-Length') || '0', 10);
-                    var reader = response.body.getReader();
-                    var chunks = [];
-                    var received = 0;
-
-                    function pump() {
-                        return reader.read().then(function(result) {
-                            if (result.done) {
-                                completeDownload();
-                                var mimeType = format === 'mp3' ? 'audio/mpeg' : 'video/mp4';
-                                var blob = new Blob(chunks, { type: mimeType });
-                                saveBlob(blob, filename);
-                                return;
-                            }
-                            chunks.push(result.value);
-                            received += result.value.length;
-                            updateDownloadProgress(received, contentLength);
-                            return pump();
-                        });
-                    }
-
-                    return pump();
-                } else {
-                    // Blob strategy
-                    setTimeout(function() {
-                        progressProcessing.classList.add('hidden');
-                        showDownloadProgress();
-                        downloadStatus.textContent = 'Downloading file...';
-                        downloadBar.classList.add('indeterminate');
-                        downloadPct.textContent = '—';
-                    }, 400);
-
-                    return response.blob().then(function(blob) {
-                        completeDownload();
-                        saveBlob(blob, filename);
-                    });
-                }
-            })
-            .then(function() {
-                toast(format.toUpperCase() + ' downloaded successfully!', 'success');
-                setTimeout(hideAllProgress, 2000);
-            })
-            .catch(function(error) {
-                timers.forEach(clearTimeout);
-
-                if (error.name === 'AbortError') {
-                    toast('Download cancelled', 'warning');
-                    hideAllProgress();
-                    return;
-                }
-
-                console.warn('[Download] Failed, trying native fallback:', error.message);
-                progressProcessing.classList.add('hidden');
-                progressDownload.classList.add('hidden');
-
-                toast('Trying alternative download method...', 'warning', 3000);
-                var a = document.createElement('a');
-                a.href = downloadUrl;
-                a.download = filename;
-                a.style.display = 'none';
-                document.body.appendChild(a);
-                a.click();
-                setTimeout(function() { a.remove(); }, 5000);
-                downloadBtn.disabled = false;
-            });
+        setTimeout(function() {
+            hideAllProgress();
+            toast(format.toUpperCase() + ' download started! Check your browser downloads.', 'success');
+            // Clean up iframe after a long while
+            setTimeout(function() { iframe.remove(); }, 120000);
+        }, 4000);
     }
 
     // ── Event Listeners ──
