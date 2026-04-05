@@ -3,41 +3,58 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>water2wine - YouTube Converter</title>
+    <meta name="description" content="Water2Wine — Transform YouTube videos into high-quality MP3 audio and MP4 video downloads instantly. Free, fast, no signup required.">
+    <title>water2wine — YouTube to MP3 & MP4 Converter</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 <body>
+    <div class="bg-glow bg-glow-1"></div>
+    <div class="bg-glow bg-glow-2"></div>
+
     <header>
         <div class="container">
-            <h1><i class="fas fa-wine-glass-alt"></i> water2wine</h1>
-            <p>Transform YouTube videos into pure quality.</p>
+            <div class="logo-group">
+                <div class="logo-icon"><i class="fas fa-wine-glass-alt"></i></div>
+                <div>
+                    <h1>water2wine</h1>
+                    <p class="tagline">Transform YouTube into pure quality</p>
+                </div>
+            </div>
         </div>
     </header>
 
     <main class="container">
-        <section class="input-section">
+        <section class="input-section" id="input-section">
             <div class="input-group">
-                <input type="text" id="video-url" placeholder="Paste YouTube URL here..." aria-label="YouTube URL">
-                <button id="fetch-info-btn">Analyze</button>
+                <div class="input-icon"><i class="fab fa-youtube"></i></div>
+                <input type="text" id="video-url" placeholder="Paste a YouTube link..." aria-label="YouTube URL" autocomplete="off" spellcheck="false">
+                <button id="fetch-info-btn" disabled>
+                    <i class="fas fa-search"></i>
+                    <span>Analyze</span>
+                </button>
             </div>
+            <p class="input-hint" id="input-hint">Supports youtube.com, youtu.be, shorts, and live links</p>
         </section>
 
         <section id="preview-section" class="preview-card hidden">
             <div class="thumbnail-container">
-                <img id="video-thumbnail" src="" alt="Video Thumbnail">
+                <img id="video-thumbnail" src="" alt="Video Thumbnail" loading="lazy">
                 <span id="video-duration" class="duration-badge">0:00</span>
             </div>
             <div class="video-details">
                 <h2 id="video-title">Video Title</h2>
-                <p id="video-channel"><i class="fas fa-user"></i> Channel Name</p>
+                <p id="video-channel" class="channel-name"><i class="fas fa-user-circle"></i> Channel Name</p>
                 
                 <div class="controls">
                     <div class="control-group">
                         <label for="format-select">Format</label>
                         <select id="format-select">
-                            <option value="mp3">MP3 (Audio)</option>
-                            <option value="mp4">MP4 (Video)</option>
+                            <option value="mp3">MP3 — Audio Only</option>
+                            <option value="mp4">MP4 — Video</option>
                         </select>
                     </div>
                     <div class="control-group">
@@ -48,28 +65,54 @@
                     </div>
                 </div>
 
-                <button id="download-btn" class="btn-primary">
-                    <i class="fas fa-download"></i> Download
+                <button id="download-btn" class="btn-download">
+                    <i class="fas fa-download"></i>
+                    <span>Download</span>
                 </button>
 
-                <div id="progress-container" class="progress-container hidden">
-                    <div class="progress-bar-wrapper">
-                        <div id="progress-bar" class="progress-bar"></div>
+                <!-- Progress: Processing Phase -->
+                <div id="progress-processing" class="progress-section hidden">
+                    <div class="progress-header">
+                        <span class="progress-label"><i class="fas fa-cog fa-spin"></i> Processing</span>
+                        <span id="processing-pct" class="progress-pct">—</span>
                     </div>
-                    <p id="progress-status">Starting download...</p>
+                    <div class="progress-track">
+                        <div id="processing-bar" class="progress-fill indeterminate"></div>
+                    </div>
+                    <p id="processing-status" class="progress-status">Extracting stream...</p>
                 </div>
+
+                <!-- Progress: Download Phase -->
+                <div id="progress-download" class="progress-section hidden">
+                    <div class="progress-header">
+                        <span class="progress-label"><i class="fas fa-arrow-down"></i> Downloading</span>
+                        <span id="download-pct" class="progress-pct">0%</span>
+                    </div>
+                    <div class="progress-track">
+                        <div id="download-bar" class="progress-fill"></div>
+                    </div>
+                    <p id="download-status" class="progress-status">Starting download...</p>
+                </div>
+
+                <!-- Retry -->
+                <button id="retry-btn" class="btn-retry hidden">
+                    <i class="fas fa-redo"></i> Retry Download
+                </button>
             </div>
         </section>
     </main>
 
     <footer>
         <div class="container">
-            <p>&copy; 2026 water2wine. Built with FastAPI and Vanilla JS.</p>
+            <p>&copy; 2026 water2wine &middot; Built with FastAPI & Vanilla JS</p>
             <div class="footer-links">
-                <a href="https://github.com/mrlgp/water2wine" target="_blank"><i class="fab fa-github"></i> GitHub</a>
+                <a href="https://github.com/dmediontherise/water2wine" target="_blank" rel="noopener"><i class="fab fa-github"></i> Source</a>
             </div>
         </div>
     </footer>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
 
     <script src="app.js"></script>
 </body>

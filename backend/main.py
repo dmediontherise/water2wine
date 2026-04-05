@@ -41,6 +41,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Length", "Content-Disposition"],
 )
 
 # In-memory rate limiting: 10 requests/60s per IP
@@ -204,7 +205,7 @@ async def get_info(request: Request, url: str = Query(...)):
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}\n{error_trace}")
 
 @app.get("/api/download")
-async def download(request: Request, url: str = Query(...), format: str = Query(...), quality: str = Query(None), title: str = Query("video")):
+async def download(request: Request, url: str = Query(...), format: str = Query(...), quality: str = Query(None), title: str = Query("video"), duration: float = Query(0)):
     check_rate_limit(request.client.host)
     validate_url(url)
     
@@ -212,6 +213,10 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
     safe_title = sanitize_filename(title)
     
     if format == "mp3":
+        bitrate_kbps = 192
+        # Estimate file size from duration: (bitrate_bps * seconds) / 8
+        estimated_size = int(duration * bitrate_kbps * 1000 / 8) if duration > 0 else 0
+
         # Get stream URL for best audio
         base_cmd = ["-g", "-f", "bestaudio/best", "--no-playlist"]
         result = await execute_ytdlp_with_fallback(base_cmd, url)
@@ -223,7 +228,7 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
             raise HTTPException(status_code=404, detail="No suitable streams found")
             
         audio_url = stream_urls[0]
-        ffmpeg_cmd = [ffmpeg_path, "-i", audio_url, "-f", "mp3", "-acodec", "libmp3lame", "-ab", "192k", "pipe:1"]
+        ffmpeg_cmd = [ffmpeg_path, "-i", audio_url, "-f", "mp3", "-acodec", "libmp3lame", "-ab", f"{bitrate_kbps}k", "pipe:1"]
         
         filename = f"{safe_title}.mp3"
         media_type = "audio/mpeg"
@@ -240,15 +245,24 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
                 if p.poll() is None:
                     p.terminate()
                     p.wait()
+
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        if estimated_size > 0:
+            headers["Content-Length"] = str(estimated_size)
                             
         return StreamingResponse(
             stream_media(),
             media_type=media_type,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+            headers=headers
         )
         
     elif format == "mp4":
         height = quality.replace("p", "") if quality else "1080"
+        # Estimate bitrate from quality
+        bitrate_map = {"360": 800, "720": 2500, "1080": 5000}
+        bitrate_kbps = bitrate_map.get(height, 2500)
+        estimated_size = int(duration * bitrate_kbps * 1000 / 8) if duration > 0 else 0
+
         base_cmd = ["-g", "-f", f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", "--no-playlist"]
         result = await execute_ytdlp_with_fallback(base_cmd, url)
         
@@ -285,11 +299,15 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
                 if p.poll() is None:
                     p.terminate()
                     p.wait()
+
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        if estimated_size > 0:
+            headers["Content-Length"] = str(estimated_size)
                             
         return StreamingResponse(
             stream_media(),
             media_type=media_type,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+            headers=headers
         )
     
     else:
