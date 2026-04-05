@@ -69,37 +69,37 @@
                     <i class="fas fa-download"></i>
                     <span>Download</span>
                 </button>
-
-                <!-- Progress: Processing Phase -->
-                <div id="progress-processing" class="progress-section hidden">
-                    <div class="progress-header">
-                        <span class="progress-label"><i class="fas fa-cog fa-spin"></i> Processing</span>
-                        <span id="processing-pct" class="progress-pct">—</span>
-                    </div>
-                    <div class="progress-track">
-                        <div id="processing-bar" class="progress-fill indeterminate"></div>
-                    </div>
-                    <p id="processing-status" class="progress-status">Extracting stream...</p>
-                </div>
-
-                <!-- Progress: Download Phase -->
-                <div id="progress-download" class="progress-section hidden">
-                    <div class="progress-header">
-                        <span class="progress-label"><i class="fas fa-arrow-down"></i> Downloading</span>
-                        <span id="download-pct" class="progress-pct">0%</span>
-                    </div>
-                    <div class="progress-track">
-                        <div id="download-bar" class="progress-fill"></div>
-                    </div>
-                    <p id="download-status" class="progress-status">Starting download...</p>
-                </div>
-
-                <!-- Retry -->
-                <button id="retry-btn" class="btn-retry hidden">
-                    <i class="fas fa-redo"></i> Retry Download
-                </button>
             </div>
         </section>
+
+        <!-- Progress: Processing Phase (outside preview so it's visible during analysis) -->
+        <div id="progress-processing" class="progress-section hidden">
+            <div class="progress-header">
+                <span class="progress-label"><i class="fas fa-cog fa-spin"></i> Processing</span>
+                <span id="processing-pct" class="progress-pct">—</span>
+            </div>
+            <div class="progress-track">
+                <div id="processing-bar" class="progress-fill indeterminate"></div>
+            </div>
+            <p id="processing-status" class="progress-status">Analyzing video...</p>
+        </div>
+
+        <!-- Progress: Download Phase -->
+        <div id="progress-download" class="progress-section hidden">
+            <div class="progress-header">
+                <span class="progress-label"><i class="fas fa-arrow-down"></i> Downloading</span>
+                <span id="download-pct" class="progress-pct">0%</span>
+            </div>
+            <div class="progress-track">
+                <div id="download-bar" class="progress-fill"></div>
+            </div>
+            <p id="download-status" class="progress-status">Starting download...</p>
+        </div>
+
+        <!-- Retry -->
+        <button id="retry-btn" class="btn-retry hidden">
+            <i class="fas fa-redo"></i> Retry Download
+        </button>
     </main>
 
     <footer>

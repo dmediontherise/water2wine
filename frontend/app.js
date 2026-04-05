@@ -190,8 +190,17 @@ document.addEventListener('DOMContentLoaded', function() {
         downloadBtn.disabled = false;
     }
 
+    // Helper to restore analyze button
+    function resetAnalyzeBtn() {
+        fetchInfoBtn.disabled = false;
+        fetchInfoBtn.innerHTML = '<i class="fas fa-search"></i> <span>Analyze</span>';
+    }
+
     // ── Fetch Video Info (SSE real-time progress) ──
     function getInfo(url) {
+        // Immediately show the user something is happening
+        fetchInfoBtn.disabled = true;
+        fetchInfoBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> <span>Analyzing...</span>';
         showProcessing('Connecting to server...');
         previewSection.classList.add('hidden');
 
@@ -234,11 +243,13 @@ document.addEventListener('DOMContentLoaded', function() {
                     setTimeout(function() {
                         previewSection.classList.remove('hidden');
                         hideAllProgress();
+                        resetAnalyzeBtn();
                     }, 600);
 
                     toast('Video analyzed successfully!', 'success');
                 } catch (err) {
                     hideAllProgress();
+                    resetAnalyzeBtn();
                     toast('Failed to parse video info', 'error', 6000);
                 }
             });
@@ -249,9 +260,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 try {
                     var data = JSON.parse(e.data);
                     hideAllProgress();
+                    resetAnalyzeBtn();
                     toast(data.detail || 'Analysis failed', 'error', 6000);
                 } catch (err) {
                     hideAllProgress();
+                    resetAnalyzeBtn();
                     toast('Analysis failed', 'error', 6000);
                 }
             });
@@ -314,6 +327,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 setTimeout(function() {
                     previewSection.classList.remove('hidden');
                     hideAllProgress();
+                    resetAnalyzeBtn();
                 }, 600);
 
                 toast('Video analyzed successfully!', 'success');
@@ -321,6 +335,7 @@ document.addEventListener('DOMContentLoaded', function() {
             .catch(function(error) {
                 timers.forEach(clearTimeout);
                 hideAllProgress();
+                resetAnalyzeBtn();
                 toast(error.message, 'error', 6000);
             });
     }
@@ -346,54 +361,37 @@ document.addEventListener('DOMContentLoaded', function() {
             '&format=' + format + '&quality=' + quality +
             '&title=' + encodeURIComponent(title) + '&duration=' + duration;
 
-        // Show processing spinner while server prepares
+        // Show processing indicator
         showProcessing('Sending request to server...');
+        downloadBtn.disabled = true;
 
         var phases = [
-            { delay: 1500, pct: 15, msg: 'Server is extracting streams...' },
-            { delay: 4000, pct: 30, msg: 'Resolving media sources...' },
-            { delay: 8000, pct: 50, msg: 'Converting with ffmpeg...' },
-            { delay: 15000, pct: 70, msg: 'Processing... this may take a moment' },
-            { delay: 25000, pct: 85, msg: 'Still working... hang tight!' }
+            { delay: 2000, pct: 15, msg: 'Server is extracting streams...' },
+            { delay: 5000, pct: 30, msg: 'Resolving media sources...' },
+            { delay: 10000, pct: 50, msg: 'Converting with ffmpeg...' },
+            { delay: 20000, pct: 70, msg: 'Processing... this may take a moment' },
+            { delay: 35000, pct: 85, msg: 'Still working... hang tight!' }
         ];
         var timers = phases.map(function(p) {
             return setTimeout(function() { updateProcessing(p.pct, p.msg); }, p.delay);
         });
 
-        // Trigger native browser download
-        // Method 1: Hidden iframe (most reliable cross-browser)
-        var iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        document.body.appendChild(iframe);
-        iframe.src = downloadUrl;
+        // Use window.location.href — the server sets Content-Disposition: attachment
+        // so the browser will download the file without navigating away
+        window.location.href = downloadUrl;
 
-        // Method 2: Anchor click (backup for browsers that don't download via iframe)
-        setTimeout(function() {
-            var a = document.createElement('a');
-            a.href = downloadUrl;
-            a.download = filename;
-            a.target = '_blank';
-            a.rel = 'noopener';
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            setTimeout(function() { a.remove(); }, 30000);
-        }, 500);
-
-        // Complete the processing bar after a short delay
-        // The actual download is handled by the browser natively
+        // Show success feedback after a short delay
         setTimeout(function() {
             timers.forEach(clearTimeout);
             completeProcessing();
-            updateProcessing(100, 'Download handed off to browser!');
+            updateProcessing(100, 'Download started!');
         }, 3000);
 
         setTimeout(function() {
             hideAllProgress();
-            toast(format.toUpperCase() + ' download started! Check your browser downloads.', 'success');
-            // Clean up iframe after a long while
-            setTimeout(function() { iframe.remove(); }, 120000);
-        }, 4000);
+            downloadBtn.disabled = false;
+            toast(format.toUpperCase() + ' download started! Check your browser downloads bar.', 'success');
+        }, 4500);
     }
 
     // ── Event Listeners ──
