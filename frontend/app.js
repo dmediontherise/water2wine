@@ -226,6 +226,61 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // ── Browser Detection ──
+    const ua = navigator.userAgent || '';
+    const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isSafari = /^((?!chrome|android).)*safari/i.test(ua);
+    const isFirefox = /firefox/i.test(ua);
+    const isMobile = isIOS || /Android/i.test(ua);
+    const supportsReadableStream = typeof ReadableStream !== 'undefined'
+        && typeof Response !== 'undefined'
+        && typeof Response.prototype.body !== 'undefined'
+        && typeof ReadableStream.prototype.getReader === 'function';
+
+    /**
+     * Determines the best download strategy for the current browser.
+     * 'stream'  — fetch + ReadableStream reader + blob (Chrome/Edge desktop: full progress)
+     * 'blob'    — fetch + response.blob() (Firefox, Android Chrome: no granular progress but reliable)
+     * 'native'  — window.open / link click to let browser handle natively (Safari, iOS: most compatible)
+     */
+    function getDownloadStrategy() {
+        if (isIOS) return 'native';           // iOS blob downloads are broken
+        if (isSafari) return 'native';        // Safari blob downloads open in tab
+        if (!supportsReadableStream) return 'blob';
+        if (isFirefox && isMobile) return 'blob';
+        return 'stream';
+    }
+
+    // ── Save Blob Cross-Browser ──
+    function saveBlob(blob, filename) {
+        // Try navigator.msSaveOrOpenBlob for old Edge (unlikely but safe)
+        if (typeof navigator.msSaveOrOpenBlob === 'function') {
+            navigator.msSaveOrOpenBlob(blob, filename);
+            return;
+        }
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+
+        // Use click event dispatch for better compatibility
+        const clickEvent = new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            view: window
+        });
+        a.dispatchEvent(clickEvent);
+
+        // Delay revoke to give the browser time to initiate
+        setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }, 5000);
+    }
+
     // ── Download with Progress ──
     async function startDownload(url, format, quality) {
         lastDownloadParams = { url, format, quality };
@@ -233,9 +288,57 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const title = videoTitle.textContent || 'video';
         const duration = currentVideoInfo ? currentVideoInfo.duration : 0;
+        const ext = format === 'mp3' ? 'mp3' : 'mp4';
+        const safeTitle = title.replace(/[^\w\s.-]/g, '').trim().slice(0, 80) || 'download';
+        const filename = `${safeTitle}.${ext}`;
         const downloadUrl = `${API_BASE}/api/download?url=${encodeURIComponent(url)}&format=${format}&quality=${quality}&title=${encodeURIComponent(title)}&duration=${duration}`;
 
-        // Phase 1: Processing
+        const strategy = getDownloadStrategy();
+        console.log(`[Download] Strategy: ${strategy}, iOS: ${isIOS}, Safari: ${isSafari}, Mobile: ${isMobile}`);
+
+        // ─── Strategy: NATIVE (Safari / iOS) ───
+        // Let the browser handle the download natively — most reliable on Safari/iOS
+        if (strategy === 'native') {
+            showProcessing(`Preparing ${format.toUpperCase()} download...`);
+
+            const processingTimers = [
+                setTimeout(() => updateProcessing(20, 'Connecting to server...'), 1500),
+                setTimeout(() => updateProcessing(50, 'Server is processing...'), 4000),
+                setTimeout(() => updateProcessing(75, 'Almost ready...'), 8000),
+            ];
+
+            // Open in same window — Safari will show its own download indicator
+            // Using a hidden iframe avoids navigating away from the page
+            const iframe = document.createElement('iframe');
+            iframe.style.display = 'none';
+            iframe.src = downloadUrl;
+            document.body.appendChild(iframe);
+
+            // Also try a direct link in case iframe doesn't trigger download
+            setTimeout(() => {
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = filename;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => {
+                    a.remove();
+                    iframe.remove();
+                }, 10000);
+            }, 500);
+
+            processingTimers.forEach(clearTimeout);
+            completeProcessing();
+            toast(`Download started! Check your browser's download bar.`, 'success');
+
+            setTimeout(() => {
+                hideAllProgress();
+            }, 3000);
+            return;
+        }
+
+        // ─── Phase 1: Processing indicator ───
         showProcessing(`Preparing ${format.toUpperCase()} stream...`);
 
         const processingPhases = [
@@ -266,42 +369,48 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(errMsg);
             }
 
-            // Phase 2: Downloading
             completeProcessing();
-            setTimeout(() => {
-                progressProcessing.classList.add('hidden');
-                showDownloadProgress();
-            }, 400);
 
-            const contentLength = parseInt(response.headers.get('Content-Length') || '0', 10);
-            const reader = response.body.getReader();
-            const chunks = [];
-            let received = 0;
+            // ─── Strategy: STREAM (Chrome/Edge desktop) ───
+            if (strategy === 'stream') {
+                setTimeout(() => {
+                    progressProcessing.classList.add('hidden');
+                    showDownloadProgress();
+                }, 400);
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                chunks.push(value);
-                received += value.length;
-                updateDownloadProgress(received, contentLength);
+                const contentLength = parseInt(response.headers.get('Content-Length') || '0', 10);
+                const reader = response.body.getReader();
+                const chunks = [];
+                let received = 0;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    chunks.push(value);
+                    received += value.length;
+                    updateDownloadProgress(received, contentLength);
+                }
+
+                completeDownload();
+
+                const mimeType = format === 'mp3' ? 'audio/mpeg' : 'video/mp4';
+                const blob = new Blob(chunks, { type: mimeType });
+                saveBlob(blob, filename);
+
+            // ─── Strategy: BLOB (Firefox, Android) ───
+            } else {
+                setTimeout(() => {
+                    progressProcessing.classList.add('hidden');
+                    showDownloadProgress();
+                    downloadStatus.textContent = 'Downloading file...';
+                    downloadBar.classList.add('indeterminate');
+                    downloadPct.textContent = '—';
+                }, 400);
+
+                const blob = await response.blob();
+                completeDownload();
+                saveBlob(blob, filename);
             }
-
-            // Complete
-            completeDownload();
-
-            // Build blob and trigger save
-            const blob = new Blob(chunks);
-            const ext = format === 'mp3' ? 'mp3' : 'mp4';
-            const safeTitle = title.replace(/[^\w\s.-]/g, '').trim().slice(0, 80) || 'download';
-            const filename = `${safeTitle}.${ext}`;
-
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(a.href);
 
             toast(`${format.toUpperCase()} downloaded successfully!`, 'success');
 
@@ -318,11 +427,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
+            // Fallback: if fetch-based download fails, try native
+            console.warn('[Download] Fetch strategy failed, falling back to native:', error.message);
             progressProcessing.classList.add('hidden');
             progressDownload.classList.add('hidden');
-            downloadBtn.disabled = false;
-            retryBtn.classList.remove('hidden');
-            toast(`Download failed: ${error.message}`, 'error', 6000);
+
+            try {
+                toast('Trying alternative download method...', 'warning', 3000);
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = filename;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => a.remove(), 5000);
+                downloadBtn.disabled = false;
+            } catch (fallbackError) {
+                downloadBtn.disabled = false;
+                retryBtn.classList.remove('hidden');
+                toast(`Download failed: ${error.message}`, 'error', 6000);
+            }
         }
     }
 
