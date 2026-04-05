@@ -12,20 +12,26 @@ from fastapi.responses import StreamingResponse
 
 app = FastAPI(title="water2wine API")
 
-# Ensure Python Scripts dir (where yt-dlp lives), ffmpeg, and Deno are on PATH
+# Ensure Python Scripts dir (where yt-dlp lives) is on PATH
+import shutil
 _scripts = os.path.join(os.path.dirname(sys.executable), "Scripts")
-_ffmpeg = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Links")
-_deno = r"C:\Users\mrlgp\AppData\Local\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe"
-for _p in [_scripts, _ffmpeg, _deno]:
-    if _p and _p not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = _p + os.pathsep + os.environ.get("PATH", "")
+if _scripts and _scripts not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _scripts + os.pathsep + os.environ.get("PATH", "")
 
 # Load Youtube Cookies for Production Bypass
 _cookies_env = os.environ.get("YOUTUBE_COOKIES")
 _cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
+_has_cookies = False
 if _cookies_env:
     with open(_cookies_path, "w", encoding="utf-8") as f:
         f.write(_cookies_env)
+    _has_cookies = True
+elif os.path.exists(_cookies_path):
+    _has_cookies = True
+
+print(f"[STARTUP] Cookies file present: {_has_cookies}")
+print(f"[STARTUP] Deno available: {shutil.which('deno')}")
+print(f"[STARTUP] yt-dlp available: {shutil.which('yt-dlp')}")
 
 # CORS Configuration
 allowed_origins = os.getenv("ALLOWED_ORIGIN", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173").split(",")
@@ -63,46 +69,84 @@ def validate_url(url: str):
 
 async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
     """
-    Executes yt-dlp with the provided base_cmd (e.g. ['-g', '-f', 'bestaudio'])
-    falling back across different cookie injection methods to bypass bot checks.
-    Returns (returncode, stdout, stderr)
+    Executes yt-dlp with robust fallback strategies.
+    Key insight: iOS and Android clients do NOT support cookies.
+    When cookies are present, we must use only 'web' client.
     """
-    import shutil
     ytdlp_path = shutil.which("yt-dlp") or "yt-dlp"
     cookies_file = os.path.join(os.path.dirname(__file__), "cookies.txt")
+    has_cookies = os.path.exists(cookies_file)
 
-    def fetch_with_args(browser=None, use_ios=True):
+    def build_and_run(use_cookies=True, player_client="web"):
         cmd = [ytdlp_path] + base_cmd
-        if os.path.exists(cookies_file):
+
+        # Add cookies if available and requested
+        if has_cookies and use_cookies:
             cmd.extend(["--cookies", cookies_file])
-        elif browser:
-            cmd.extend(["--cookies-from-browser", browser])
-            
-        if use_ios:
-            cmd.extend(["--extractor-args", "youtube:player_client=tv,ios,web,android"])
+
+        # Set player client
+        cmd.extend(["--extractor-args", f"youtube:player_client={player_client}"])
+
+        # Use Deno as JS runtime if available, fallback to node
+        deno_path = shutil.which("deno")
+        if deno_path:
+            cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
         else:
-            cmd.extend(["--extractor-args", "youtube:player_client=tv,web,android"])
-            
-        cmd.extend(["--remote-components", "ejs:npm"])
-        cmd.extend(["--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"])
+            node_path = shutil.which("node")
+            if node_path:
+                cmd.extend(["--js-runtimes", f"node:{node_path}"])
+
+        # Enable remote EJS script downloads from GitHub as fallback
+        cmd.extend(["--remote-components", "ejs:github"])
+
+        cmd.extend(["--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"])
         cmd.append(yt_url)
-        
-        print(f"Executing: {' '.join(cmd)}")
-        return subprocess.run(cmd, capture_output=True, text=True)
 
-    # Strategy 1: Try Chrome cookies + iOS client
-    result = await asyncio.to_thread(fetch_with_args, browser="chrome")
-    
-    # Strategy 2: If Chrome is locked or fails decryption, try Edge cookies + iOS client
-    if result.returncode != 0 and ("Could not copy Chrome cookie database" in result.stderr or "locked" in result.stderr or "DPAPI" in result.stderr):
-        print("Chrome locked, trying Edge...")
-        result = await asyncio.to_thread(fetch_with_args, browser="edge")
-        
-    # Strategy 3: If still failing with bot check or decryption, try without cookies but with iOS client
-    if result.returncode != 0 and ("Sign in to confirm" in result.stderr or "403" in result.stderr or "DPAPI" in result.stderr or "locked" in result.stderr):
-        print("Bot check hit or access denied, trying iOS client without cookies...")
-        result = await asyncio.to_thread(fetch_with_args, browser=None, use_ios=True)
+        print(f"[yt-dlp] Executing: {' '.join(cmd)}")
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
+    # Strategy 1: cookies + web-only client (best for cloud servers with cookies)
+    if has_cookies:
+        print("[Strategy 1] Trying: cookies + web client only")
+        result = await asyncio.to_thread(build_and_run, use_cookies=True, player_client="web")
+        if result.returncode == 0:
+            return result
+        print(f"[Strategy 1] Failed: {result.stderr[:200]}")
+
+    # Strategy 2: cookies + web,tv clients
+    if has_cookies:
+        print("[Strategy 2] Trying: cookies + web,tv clients")
+        result = await asyncio.to_thread(build_and_run, use_cookies=True, player_client="web,tv")
+        if result.returncode == 0:
+            return result
+        print(f"[Strategy 2] Failed: {result.stderr[:200]}")
+
+    # Strategy 3: no cookies, try ios/web/android (for local dev with browser cookies)
+    print("[Strategy 3] Trying: no cookies + ios,web,android clients")
+    result = await asyncio.to_thread(build_and_run, use_cookies=False, player_client="ios,web,android")
+    if result.returncode == 0:
+        return result
+    print(f"[Strategy 3] Failed: {result.stderr[:200]}")
+
+    # Strategy 4: Try browser cookies (Chrome/Edge) - only works on desktop
+    for browser in ["chrome", "edge"]:
+        try:
+            cmd = [ytdlp_path] + base_cmd
+            cmd.extend(["--cookies-from-browser", browser])
+            cmd.extend(["--extractor-args", "youtube:player_client=ios,web,android"])
+            deno_path = shutil.which("deno")
+            if deno_path:
+                cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
+            cmd.extend(["--remote-components", "ejs:github"])
+            cmd.append(yt_url)
+            print(f"[Strategy 4] Trying: {browser} browser cookies")
+            result = await asyncio.to_thread(lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=120))
+            if result.returncode == 0:
+                return result
+        except Exception as e:
+            print(f"[Strategy 4] {browser} failed: {e}")
+
+    # Return the last failed result
     return result
 
 @app.get("/health")
@@ -115,13 +159,13 @@ async def get_info(request: Request, url: str = Query(...)):
     validate_url(url)
     
     try:
-        base_cmd = ["-J", "--no-playlist", "--flat-playlist", "--js-runtimes", "deno"]
+        base_cmd = ["-J", "--no-playlist", "--flat-playlist"]
         result = await execute_ytdlp_with_fallback(base_cmd, url)
 
         if result.returncode != 0:
             error_msg = result.stderr.strip()
             print(f"yt-dlp final error: {error_msg}")
-            if "Sign in to confirm you’re not a bot" in error_msg:
+            if "Sign in to confirm you're not a bot" in error_msg:
                 raise HTTPException(status_code=403, detail="YouTube bot detection active. Try COMPLETELY CLOSING Chrome/Edge and try again.")
             raise HTTPException(status_code=400, detail=f"yt-dlp error: {error_msg}")
             
@@ -164,7 +208,6 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
     check_rate_limit(request.client.host)
     validate_url(url)
     
-    import shutil
     ffmpeg_path = shutil.which("ffmpeg") or "ffmpeg"
     safe_title = sanitize_filename(title)
     

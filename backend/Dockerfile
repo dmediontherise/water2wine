@@ -1,11 +1,15 @@
 FROM python:3.11-slim
 
-# Install ffmpeg and nodejs for bot bypassing
-RUN apt-get update && apt-get install -y ffmpeg nodejs npm && rm -rf /var/lib/apt/lists/*
+# Install ffmpeg, curl, and unzip for Deno installation
+RUN apt-get update && apt-get install -y ffmpeg curl unzip && rm -rf /var/lib/apt/lists/*
+
+# Install Deno (recommended JS runtime for yt-dlp EJS challenge solver)
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
+ENV DENO_DIR=/tmp/deno
 
 WORKDIR /app
 
-# Copy requirements and install
+# Copy requirements and install (yt-dlp[default] includes yt-dlp-ejs solver scripts)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
