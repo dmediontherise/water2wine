@@ -54,14 +54,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // ── URL Validation ──
     function isYouTubeUrl(url) {
-        // Match: youtube.com/watch?v=, youtu.be/, shorts/, live/, m.youtube.com
         if (!url) return false;
         try {
-            // Simple string-based check — no regex complexity
             if (url.indexOf('youtu.be/') !== -1) return true;
             if (url.indexOf('youtube.com/watch') !== -1 && url.indexOf('v=') !== -1) return true;
             if (url.indexOf('youtube.com/shorts/') !== -1) return true;
             if (url.indexOf('youtube.com/live/') !== -1) return true;
+            if (url.indexOf('youtube.com/embed/') !== -1) return true;
+            if (url.indexOf('youtube.com/v/') !== -1) return true;
         } catch (e) {
             // ignore
         }

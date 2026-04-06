@@ -12,6 +12,24 @@ from fastapi.responses import StreamingResponse
 
 app = FastAPI(title="water2wine API")
 
+# Simple TTL cache for video info (avoids double yt-dlp calls on info→download)
+_info_cache: dict = {}  # url -> {"data": result_stdout, "ts": time.time()}
+INFO_CACHE_TTL = 300  # 5 minutes
+
+def cache_info(url: str, stdout: str):
+    _info_cache[url] = {"data": stdout, "ts": time.time()}
+    # Evict stale entries
+    now = time.time()
+    stale = [k for k, v in _info_cache.items() if now - v["ts"] > INFO_CACHE_TTL]
+    for k in stale:
+        del _info_cache[k]
+
+def get_cached_info(url: str):
+    entry = _info_cache.get(url)
+    if entry and time.time() - entry["ts"] < INFO_CACHE_TTL:
+        return entry["data"]
+    return None
+
 # Ensure Python Scripts dir (where yt-dlp lives) is on PATH
 import shutil
 _scripts = os.path.join(os.path.dirname(sys.executable), "Scripts")
@@ -62,7 +80,12 @@ def sanitize_filename(filename: str) -> str:
     sanitized = re.sub(r'\s+', ' ', sanitized).strip()
     return sanitized[:128]
 
-YOUTUBE_REGEX = re.compile(r'^(https?://)?(www\.)?(youtube\.com/(watch\?v=|shorts/|live/)|youtu\.be/)[\w-]+')
+YOUTUBE_REGEX = re.compile(
+    r'^(https?://)?'
+    r'(www\.|m\.|music\.)?'
+    r'(youtube\.com/(watch\?.*v=[\w-]+|shorts/[\w-]+|live/[\w-]+|embed/[\w-]+|v/[\w-]+)'
+    r'|youtu\.be/[\w-]+)'
+)
 
 def validate_url(url: str):
     if not YOUTUBE_REGEX.match(url):
@@ -160,17 +183,22 @@ async def get_info(request: Request, url: str = Query(...)):
     validate_url(url)
     
     try:
-        base_cmd = ["-J", "--no-playlist", "--flat-playlist"]
-        result = await execute_ytdlp_with_fallback(base_cmd, url)
+        cached = get_cached_info(url)
+        if cached:
+            info = json.loads(cached)
+        else:
+            base_cmd = ["-J", "--no-playlist", "--flat-playlist"]
+            result = await execute_ytdlp_with_fallback(base_cmd, url)
 
-        if result.returncode != 0:
-            error_msg = result.stderr.strip()
-            print(f"yt-dlp final error: {error_msg}")
-            if "Sign in to confirm you're not a bot" in error_msg:
-                raise HTTPException(status_code=403, detail="YouTube bot detection active. Try COMPLETELY CLOSING Chrome/Edge and try again.")
-            raise HTTPException(status_code=400, detail=f"yt-dlp error: {error_msg}")
-            
-        info = json.loads(result.stdout)
+            if result.returncode != 0:
+                error_msg = result.stderr.strip()
+                print(f"yt-dlp final error: {error_msg}")
+                if "Sign in to confirm you're not a bot" in error_msg:
+                    raise HTTPException(status_code=403, detail="YouTube bot detection active. Try COMPLETELY CLOSING Chrome/Edge and try again.")
+                raise HTTPException(status_code=400, detail=f"yt-dlp error: {error_msg}")
+
+            cache_info(url, result.stdout)
+            info = json.loads(result.stdout)
         duration = info.get("duration", 0)
         
         formats = [
@@ -348,31 +376,37 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
     safe_title = sanitize_filename(title)
     
     if format == "mp3":
+        # Parse bitrate from quality param (e.g. "192k" -> 192, "320k" -> 320)
         bitrate_kbps = 192
-        # Estimate file size from duration: (bitrate_bps * seconds) / 8
-        estimated_size = int(duration * bitrate_kbps * 1000 / 8) if duration > 0 else 0
+        if quality:
+            try:
+                bitrate_kbps = int(quality.replace("k", "").replace("K", ""))
+            except ValueError:
+                pass
+        if bitrate_kbps not in (128, 192, 320):
+            bitrate_kbps = 192
 
         # Get stream URL for best audio
         base_cmd = ["-g", "-f", "bestaudio/best", "--no-playlist"]
         result = await execute_ytdlp_with_fallback(base_cmd, url)
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail=f"Failed to extract stream URL: {result.stderr}")
-            
+
         stream_urls = result.stdout.strip().split('\n')
         if not stream_urls or not stream_urls[0]:
             raise HTTPException(status_code=404, detail="No suitable streams found")
-            
+
         audio_url = stream_urls[0]
         ffmpeg_cmd = [ffmpeg_path, "-i", audio_url, "-f", "mp3", "-acodec", "libmp3lame", "-ab", f"{bitrate_kbps}k", "pipe:1"]
-        
+
         filename = f"{safe_title}.mp3"
         media_type = "audio/mpeg"
-        
+
         async def stream_media():
             p = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             try:
                 while True:
-                    chunk = await asyncio.to_thread(p.stdout.read, 16384)
+                    chunk = await asyncio.to_thread(p.stdout.read, 65536)
                     if not chunk:
                         break
                     yield chunk
@@ -381,10 +415,11 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
                     p.terminate()
                     p.wait()
 
+        # Don't set Content-Length for streamed transcoded output — the actual
+        # size is unknown until ffmpeg finishes.  An incorrect Content-Length
+        # causes browsers to report a corrupt / incomplete download.
         headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-        if estimated_size > 0:
-            headers["Content-Length"] = str(estimated_size)
-                            
+
         return StreamingResponse(
             stream_media(),
             media_type=media_type,
@@ -393,17 +428,13 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
         
     elif format == "mp4":
         height = quality.replace("p", "") if quality else "1080"
-        # Estimate bitrate from quality
-        bitrate_map = {"360": 800, "720": 2500, "1080": 5000}
-        bitrate_kbps = bitrate_map.get(height, 2500)
-        estimated_size = int(duration * bitrate_kbps * 1000 / 8) if duration > 0 else 0
 
         base_cmd = ["-g", "-f", f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", "--no-playlist"]
         result = await execute_ytdlp_with_fallback(base_cmd, url)
-        
+
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail=f"Failed to extract stream URLs: {result.stderr}")
-            
+
         stream_urls = result.stdout.strip().split('\n')
         if not stream_urls or not stream_urls[0]:
             raise HTTPException(status_code=404, detail="No suitable streams found")
@@ -418,15 +449,15 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
                 ffmpeg_path, "-i", stream_urls[0],
                 "-c", "copy", "-f", "mp4", "-movflags", "frag_keyframe+empty_moov", "pipe:1"
             ]
-        
+
         filename = f"{safe_title}.mp4"
         media_type = "video/mp4"
-        
+
         async def stream_media():
             p = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             try:
                 while True:
-                    chunk = await asyncio.to_thread(p.stdout.read, 16384)
+                    chunk = await asyncio.to_thread(p.stdout.read, 65536)
                     if not chunk:
                         break
                     yield chunk
@@ -436,9 +467,7 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
                     p.wait()
 
         headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-        if estimated_size > 0:
-            headers["Content-Length"] = str(estimated_size)
-                            
+
         return StreamingResponse(
             stream_media(),
             media_type=media_type,
