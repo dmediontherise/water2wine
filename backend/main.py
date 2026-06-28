@@ -12,6 +12,27 @@ from fastapi.responses import StreamingResponse
 
 app = FastAPI(title="water2wine API")
 
+@app.on_event("startup")
+async def upgrade_ytdlp_startup():
+    import subprocess
+    import sys
+    print("[STARTUP] Upgrading yt-dlp to ensure latest signature decryption...", flush=True)
+    try:
+        res = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp[default]"],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        if res.returncode == 0:
+            print("[STARTUP] yt-dlp successfully upgraded.", flush=True)
+        else:
+            print(f"[STARTUP] yt-dlp upgrade returned code {res.returncode}. Stderr: {res.stderr}", flush=True)
+    except Exception as e:
+        print(f"[STARTUP] Failed to upgrade yt-dlp on startup: {e}", flush=True)
+
+
 # Simple TTL cache for video info (avoids double yt-dlp calls on info→download)
 _info_cache: dict = {}  # url -> {"data": result_stdout, "ts": time.time()}
 INFO_CACHE_TTL = 300  # 5 minutes
