@@ -121,6 +121,7 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
     ytdlp_path = shutil.which("yt-dlp") or "yt-dlp"
     cookies_file = os.path.join(os.path.dirname(__file__), "cookies.txt")
     has_cookies = os.path.exists(cookies_file)
+    best_error_result = None
 
     def build_and_run(use_cookies=True, player_client="web"):
         cmd = [ytdlp_path] + base_cmd
@@ -156,6 +157,7 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
         result = await asyncio.to_thread(build_and_run, use_cookies=True, player_client="web")
         if result.returncode == 0:
             return result
+        best_error_result = result
         print(f"[Strategy 1] Failed: {result.stderr[:200]}")
 
     # Strategy 2: cookies + web,tv clients
@@ -164,6 +166,7 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
         result = await asyncio.to_thread(build_and_run, use_cookies=True, player_client="web,tv")
         if result.returncode == 0:
             return result
+        best_error_result = result
         print(f"[Strategy 2] Failed: {result.stderr[:200]}")
 
     # Strategy 3: no cookies, try ios/web/android (for local dev with browser cookies)
@@ -171,6 +174,8 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
     result = await asyncio.to_thread(build_and_run, use_cookies=False, player_client="ios,web,android")
     if result.returncode == 0:
         return result
+    if best_error_result is None:
+        best_error_result = result
     print(f"[Strategy 3] Failed: {result.stderr[:200]}")
 
     # Strategy 4: Try browser cookies (Chrome/Edge) - only works on desktop
@@ -191,7 +196,9 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
         except Exception as e:
             print(f"[Strategy 4] {browser} failed: {e}")
 
-    # Return the last failed result
+    # Return the primary failed result (not browser cookies error)
+    if best_error_result is not None:
+        return best_error_result
     return result
 
 @app.get("/health")
@@ -297,6 +304,7 @@ async def get_info_stream(request: Request, url: str = Query(...)):
             return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
         result = None
+        best_error_result = None
 
         # Phase 2: Try strategies with progress updates
         if has_cookies:
@@ -305,12 +313,17 @@ async def get_info_stream(request: Request, url: str = Query(...)):
             if result.returncode == 0:
                 yield send_event("progress", {"pct": 70, "msg": "Extracting video metadata..."})
             else:
+                best_error_result = result
                 yield send_event("progress", {"pct": 30, "msg": "Trying alternate client..."})
                 result = await asyncio.to_thread(build_and_run, use_cookies=True, player_client="web,tv")
+                if result.returncode != 0:
+                    best_error_result = result
 
         if result is None or result.returncode != 0:
             yield send_event("progress", {"pct": 40, "msg": "Contacting YouTube servers..."})
             result = await asyncio.to_thread(build_and_run, use_cookies=False, player_client="ios,web,android")
+            if result.returncode != 0 and best_error_result is None:
+                best_error_result = result
 
         if result.returncode != 0:
             # Try browser cookies
@@ -333,7 +346,8 @@ async def get_info_stream(request: Request, url: str = Query(...)):
 
         # Phase 3: Process result
         if result.returncode != 0:
-            error_msg = result.stderr.strip()
+            final_err_result = best_error_result if best_error_result is not None else result
+            error_msg = final_err_result.stderr.strip()
             if "Sign in to confirm you're not a bot" in error_msg:
                 yield send_event("error_event", {"detail": "YouTube bot detection active. Try again later."})
             else:
