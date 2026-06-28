@@ -206,8 +206,8 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
         best_error_result = result
     print(f"[Strategy 3] Failed: {result.stderr[:200]}")
 
-    # Strategy 4: Try browser cookies (Chrome/Edge) - only works on desktop
-    for browser in ["chrome", "edge"]:
+    # Strategy 4: Try browser cookies (Chrome/Edge/Firefox/Brave/Opera/Vivaldi) - only works on desktop
+    for browser in ["chrome", "edge", "firefox", "brave", "opera", "vivaldi"]:
         try:
             cmd = [sys.executable, "-m", "yt_dlp"] + base_cmd
             cmd.extend(["--cookies-from-browser", browser])
@@ -263,7 +263,9 @@ async def get_info(request: Request, url: str = Query(...)):
                 error_msg = result.stderr.strip()
                 print(f"yt-dlp final error: {error_msg}")
                 if "Sign in to confirm you're not a bot" in error_msg:
-                    raise HTTPException(status_code=403, detail="YouTube bot detection active. Try COMPLETELY CLOSING Chrome/Edge and try again.")
+                    raise HTTPException(status_code=403, detail="YouTube bot detection active. Try COMPLETELY CLOSING Chrome/Edge/Firefox/Brave and trying again, or provide a valid cookies.txt file.")
+                elif "HTTP Error 429" in error_msg:
+                    raise HTTPException(status_code=429, detail="YouTube rate limit (429) active. Try COMPLETELY CLOSING Chrome/Edge/Firefox/Brave and trying again, or provide a valid cookies.txt file.")
                 raise HTTPException(status_code=400, detail=f"yt-dlp error: {error_msg}")
 
             cache_info(url, result.stdout)
@@ -379,7 +381,7 @@ async def get_info_stream(request: Request, url: str = Query(...)):
 
         if result.returncode != 0:
             # Try browser cookies
-            for browser in ["chrome", "edge"]:
+            for browser in ["chrome", "edge", "firefox", "brave", "opera", "vivaldi"]:
                 yield send_event("progress", {"pct": 55, "msg": f"Trying {browser} session..."})
                 try:
                     cmd = [sys.executable, "-m", "yt_dlp"] + base_cmd
@@ -413,7 +415,9 @@ async def get_info_stream(request: Request, url: str = Query(...)):
             final_err_result = best_error_result if best_error_result is not None else result
             error_msg = final_err_result.stderr.strip()
             if "Sign in to confirm you're not a bot" in error_msg:
-                yield send_event("error_event", {"detail": "YouTube bot detection active. Try again later."})
+                yield send_event("error_event", {"detail": "YouTube bot detection active. Please completely close your browser (Chrome/Edge/Brave) and try again, or export fresh cookies to cookies.txt."})
+            elif "HTTP Error 429" in error_msg:
+                yield send_event("error_event", {"detail": "YouTube rate limit (429) active. Please completely close your browser (Chrome/Edge/Brave) and try again, or export fresh cookies to cookies.txt."})
             else:
                 yield send_event("error_event", {"detail": f"Analysis failed: {error_msg[:200]}"})
             return
