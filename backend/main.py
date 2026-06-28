@@ -18,9 +18,13 @@ async def upgrade_ytdlp_startup():
     import sys
     print("[STARTUP] Upgrading yt-dlp to ensure latest signature decryption...", flush=True)
     try:
+        env = os.environ.copy()
+        if "SSLKEYLOGFILE" in env:
+            del env["SSLKEYLOGFILE"]
         res = await asyncio.to_thread(
             subprocess.run,
             [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp[default]"],
+            env=env,
             capture_output=True,
             text=True,
             timeout=60
@@ -67,6 +71,21 @@ if _cookies_env:
     _has_cookies = True
 elif os.path.exists(_cookies_path):
     _has_cookies = True
+else:
+    # Look in the parent directory for cookies files (common in local setups)
+    _parent_cookies = [
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "cookies.txt"),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_cookies.txt"),
+    ]
+    for p in _parent_cookies:
+        if os.path.exists(p):
+            try:
+                shutil.copy(p, _cookies_path)
+                _has_cookies = True
+                print(f"[STARTUP] Copied cookies from {p}")
+                break
+            except Exception as e:
+                print(f"[STARTUP] Failed to copy cookies from {p}: {e}")
 
 print(f"[STARTUP] Cookies file present: {_has_cookies}")
 print(f"[STARTUP] Deno available: {shutil.which('deno')}")
@@ -118,13 +137,12 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
     Key insight: iOS and Android clients do NOT support cookies.
     When cookies are present, we must use only 'web' client.
     """
-    ytdlp_path = shutil.which("yt-dlp") or "yt-dlp"
     cookies_file = os.path.join(os.path.dirname(__file__), "cookies.txt")
     has_cookies = os.path.exists(cookies_file)
     best_error_result = None
 
     def build_and_run(use_cookies=True, player_client="web"):
-        cmd = [ytdlp_path] + base_cmd
+        cmd = [sys.executable, "-m", "yt_dlp"] + base_cmd
 
         # Add cookies if available and requested
         if has_cookies and use_cookies:
@@ -135,6 +153,11 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
 
         # Use Deno as JS runtime if available, fallback to node
         deno_path = shutil.which("deno")
+        if not deno_path and os.path.exists("/usr/local/bin/deno"):
+            deno_path = "/usr/local/bin/deno"
+        elif not deno_path and os.path.exists(os.path.expanduser("~/.deno/bin/deno")):
+            deno_path = os.path.expanduser("~/.deno/bin/deno")
+
         if deno_path:
             cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
         else:
@@ -148,8 +171,13 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
         cmd.extend(["--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"])
         cmd.append(yt_url)
 
+        # Clean environment to prevent SSLKEYLOGFILE write errors in sandboxed environments
+        env = os.environ.copy()
+        if "SSLKEYLOGFILE" in env:
+            del env["SSLKEYLOGFILE"]
+
         print(f"[yt-dlp] Executing: {' '.join(cmd)}")
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
 
     # Strategy 1: cookies + web-only client (best for cloud servers with cookies)
     if has_cookies:
@@ -181,16 +209,29 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
     # Strategy 4: Try browser cookies (Chrome/Edge) - only works on desktop
     for browser in ["chrome", "edge"]:
         try:
-            cmd = [ytdlp_path] + base_cmd
+            cmd = [sys.executable, "-m", "yt_dlp"] + base_cmd
             cmd.extend(["--cookies-from-browser", browser])
             cmd.extend(["--extractor-args", "youtube:player_client=ios,web,android"])
+            
             deno_path = shutil.which("deno")
+            if not deno_path and os.path.exists("/usr/local/bin/deno"):
+                deno_path = "/usr/local/bin/deno"
+            elif not deno_path and os.path.exists(os.path.expanduser("~/.deno/bin/deno")):
+                deno_path = os.path.expanduser("~/.deno/bin/deno")
+
             if deno_path:
                 cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
+            
             cmd.extend(["--remote-components", "ejs:github"])
             cmd.append(yt_url)
+            
+            # Clean environment to prevent SSLKEYLOGFILE write errors in sandboxed environments
+            env = os.environ.copy()
+            if "SSLKEYLOGFILE" in env:
+                del env["SSLKEYLOGFILE"]
+
             print(f"[Strategy 4] Trying: {browser} browser cookies")
-            result = await asyncio.to_thread(lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=120))
+            result = await asyncio.to_thread(lambda: subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120))
             if result.returncode == 0:
                 return result
         except Exception as e:
@@ -280,18 +321,23 @@ async def get_info_stream(request: Request, url: str = Query(...)):
 
         yield send_event("progress", {"pct": 10, "msg": "Initializing yt-dlp engine..."})
 
-        ytdlp_path = _shutil.which("yt-dlp") or "yt-dlp"
         cookies_file = os.path.join(os.path.dirname(__file__), "cookies.txt")
         has_cookies = os.path.exists(cookies_file)
 
         base_cmd = ["-J", "--no-playlist", "--flat-playlist"]
 
         def build_and_run(use_cookies=True, player_client="web"):
-            cmd = [ytdlp_path] + base_cmd
+            cmd = [sys.executable, "-m", "yt_dlp"] + base_cmd
             if has_cookies and use_cookies:
                 cmd.extend(["--cookies", cookies_file])
             cmd.extend(["--extractor-args", f"youtube:player_client={player_client}"])
+            
             deno_path = _shutil.which("deno")
+            if not deno_path and os.path.exists("/usr/local/bin/deno"):
+                deno_path = "/usr/local/bin/deno"
+            elif not deno_path and os.path.exists(os.path.expanduser("~/.deno/bin/deno")):
+                deno_path = os.path.expanduser("~/.deno/bin/deno")
+
             if deno_path:
                 cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
             else:
@@ -301,7 +347,13 @@ async def get_info_stream(request: Request, url: str = Query(...)):
             cmd.extend(["--remote-components", "ejs:github"])
             cmd.extend(["--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"])
             cmd.append(url)
-            return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            
+            # Clean environment to prevent SSLKEYLOGFILE write errors in sandboxed environments
+            env = os.environ.copy()
+            if "SSLKEYLOGFILE" in env:
+                del env["SSLKEYLOGFILE"]
+
+            return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
 
         result = None
         best_error_result = None
@@ -330,15 +382,27 @@ async def get_info_stream(request: Request, url: str = Query(...)):
             for browser in ["chrome", "edge"]:
                 yield send_event("progress", {"pct": 55, "msg": f"Trying {browser} session..."})
                 try:
-                    cmd = [ytdlp_path] + base_cmd
+                    cmd = [sys.executable, "-m", "yt_dlp"] + base_cmd
                     cmd.extend(["--cookies-from-browser", browser])
                     cmd.extend(["--extractor-args", "youtube:player_client=ios,web,android"])
+                    
                     deno_path = _shutil.which("deno")
+                    if not deno_path and os.path.exists("/usr/local/bin/deno"):
+                        deno_path = "/usr/local/bin/deno"
+                    elif not deno_path and os.path.exists(os.path.expanduser("~/.deno/bin/deno")):
+                        deno_path = os.path.expanduser("~/.deno/bin/deno")
+
                     if deno_path:
                         cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
                     cmd.extend(["--remote-components", "ejs:github"])
                     cmd.append(url)
-                    result = await asyncio.to_thread(lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=120))
+                    
+                    # Clean environment to prevent SSLKEYLOGFILE write errors in sandboxed environments
+                    env = os.environ.copy()
+                    if "SSLKEYLOGFILE" in env:
+                        del env["SSLKEYLOGFILE"]
+
+                    result = await asyncio.to_thread(lambda: subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120))
                     if result.returncode == 0:
                         break
                 except Exception:
