@@ -299,9 +299,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     hideAllProgress();
                     resetAnalyzeBtn();
                     var msg = data.detail || 'Analysis failed';
-
-
-                    }
                     toast(msg, 'error', 12000);
                 } catch (err) {
                     hideAllProgress();
@@ -378,9 +375,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 hideAllProgress();
                 resetAnalyzeBtn();
                 var msg = error.message;
-
-
-                }
                 toast(msg, 'error', 12000);
             });
     }
