@@ -43,9 +43,46 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log('[water2wine] Script loaded, DOM elements found.');
 
     // ── Constants ──
-    var API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-        ? 'http://localhost:8000'
-        : 'https://youtube-converter-api-zy86.onrender.com';
+    var API_BASE = 'https://youtube-converter-api-zy86.onrender.com';
+
+    // Auto-detect local backend helper
+    function detectLocalBackend() {
+        var localUrl = 'http://localhost:8000';
+        fetch(localUrl + '/health')
+            .then(function(res) {
+                if (res.ok) {
+                    API_BASE = localUrl;
+                    console.log('[water2wine] Local backend helper detected! Routing requests to localhost.');
+                    var badge = document.getElementById('backend-status');
+                    if (!badge) {
+                        badge = document.createElement('div');
+                        badge.id = 'backend-status';
+                        badge.style.position = 'fixed';
+                        badge.style.bottom = '15px';
+                        badge.style.right = '15px';
+                        badge.style.padding = '8px 12px';
+                        badge.style.borderRadius = '20px';
+                        badge.style.background = 'rgba(16, 185, 129, 0.15)';
+                        badge.style.border = '1px solid rgb(16, 185, 129)';
+                        badge.style.color = 'rgb(52, 211, 153)';
+                        badge.style.fontSize = '12px';
+                        badge.style.fontFamily = 'sans-serif';
+                        badge.style.zIndex = '9999';
+                        badge.innerHTML = '<i class="fas fa-check-circle"></i> Local Helper Active';
+                        document.body.appendChild(badge);
+                    }
+                }
+            })
+            .catch(function() {
+                // Not running, fallback to Render
+            });
+    }
+
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        API_BASE = 'http://localhost:8000';
+    } else {
+        detectLocalBackend();
+    }
 
     // State
     var lastDownloadParams = null;
@@ -261,7 +298,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     var data = JSON.parse(e.data);
                     hideAllProgress();
                     resetAnalyzeBtn();
-                    toast(data.detail || 'Analysis failed', 'error', 6000);
+                    var msg = data.detail || 'Analysis failed';
+                    if (msg.indexOf('bot') !== -1 || msg.indexOf('429') !== -1 || msg.indexOf('limit') !== -1) {
+                        msg += " (Tip: Run the local backend helper by starting 'start_local.ps1' on your machine to bypass cloud restrictions!)";
+                    }
+                    toast(msg, 'error', 12000);
                 } catch (err) {
                     hideAllProgress();
                     resetAnalyzeBtn();
@@ -336,7 +377,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 timers.forEach(clearTimeout);
                 hideAllProgress();
                 resetAnalyzeBtn();
-                toast(error.message, 'error', 6000);
+                var msg = error.message;
+                if (msg.indexOf('bot') !== -1 || msg.indexOf('429') !== -1 || msg.indexOf('limit') !== -1) {
+                    msg += " (Tip: Run the local backend helper by starting 'start_local.ps1' on your machine to bypass cloud restrictions!)";
+                }
+                toast(msg, 'error', 12000);
             });
     }
 
