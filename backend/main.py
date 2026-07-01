@@ -145,9 +145,18 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str, user_agent: s
     def build_and_run(use_cookies=True, player_client="web"):
         cmd = [sys.executable, "-m", "yt_dlp"] + base_cmd
 
-        # Add cookies if available and requested
+        temp_cookies = None
         if has_cookies and use_cookies:
-            cmd.extend(["--cookies", cookies_file])
+            import tempfile
+            try:
+                fd, temp_cookies = tempfile.mkstemp(suffix=".txt", prefix="yt_cookies_")
+                with os.fdopen(fd, "wb") as f_dst:
+                    with open(cookies_file, "rb") as f_src:
+                        f_dst.write(f_src.read())
+                cmd.extend(["--cookies", temp_cookies])
+            except Exception as e:
+                print(f"[yt-dlp] Warning: failed to create temp cookies: {e}")
+                cmd.extend(["--cookies", cookies_file])
 
         # Set player client
         cmd.extend(["--extractor-args", f"youtube:player_client={player_client}"])
@@ -180,7 +189,14 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str, user_agent: s
             del env["SSLKEYLOGFILE"]
 
         print(f"[yt-dlp] Executing: {' '.join(cmd)}")
-        return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
+        try:
+            return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
+        finally:
+            if temp_cookies and os.path.exists(temp_cookies):
+                try:
+                    os.remove(temp_cookies)
+                except Exception as e:
+                    print(f"[yt-dlp] Warning: failed to remove temp cookies {temp_cookies}: {e}")
 
     # Strategy 1: cookies + web-only client (best for cloud servers with cookies)
     if has_cookies:
@@ -423,8 +439,20 @@ async def get_info_stream(request: Request, url: str = Query(...), ua: str = Que
 
         def build_and_run(use_cookies=True, player_client="web"):
             cmd = [sys.executable, "-m", "yt_dlp"] + base_cmd
+            
+            temp_cookies = None
             if has_cookies and use_cookies:
-                cmd.extend(["--cookies", cookies_file])
+                import tempfile
+                try:
+                    fd, temp_cookies = tempfile.mkstemp(suffix=".txt", prefix="yt_cookies_")
+                    with os.fdopen(fd, "wb") as f_dst:
+                        with open(cookies_file, "rb") as f_src:
+                            f_dst.write(f_src.read())
+                    cmd.extend(["--cookies", temp_cookies])
+                except Exception as e:
+                    print(f"[yt-dlp] Warning: failed to create temp cookies: {e}")
+                    cmd.extend(["--cookies", cookies_file])
+
             cmd.extend(["--extractor-args", f"youtube:player_client={player_client}"])
             
             deno_path = _shutil.which("deno")
@@ -451,7 +479,14 @@ async def get_info_stream(request: Request, url: str = Query(...), ua: str = Que
             if "SSLKEYLOGFILE" in env:
                 del env["SSLKEYLOGFILE"]
 
-            return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
+            try:
+                return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
+            finally:
+                if temp_cookies and os.path.exists(temp_cookies):
+                    try:
+                        os.remove(temp_cookies)
+                    except Exception as e:
+                        print(f"[yt-dlp] Warning: failed to remove temp cookies {temp_cookies}: {e}")
 
         result = None
         best_error_result = None
