@@ -246,6 +246,41 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
 async def health():
     return {"status": "ok"}
 
+@app.get("/api/debug-cookies")
+async def debug_cookies():
+    import os
+    env_cookies = os.environ.get("YOUTUBE_COOKIES", "")
+    cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
+    exists = os.path.exists(cookies_path)
+    size = os.path.getsize(cookies_path) if exists else 0
+    
+    first_lines = []
+    if exists:
+        try:
+            with open(cookies_path, "r", encoding="utf-8") as f:
+                for _ in range(10):
+                    line = f.readline()
+                    if not line:
+                        break
+                    parts = line.strip().split("\t")
+                    if len(parts) >= 7:
+                        parts[6] = parts[6][:10] + "..."
+                    first_lines.append("\t".join(parts))
+        except Exception as e:
+            first_lines.append(f"Error reading: {e}")
+            
+    import shutil
+    return {
+        "env_var_present": bool(env_cookies),
+        "env_var_length": len(env_cookies),
+        "file_exists": exists,
+        "file_size": size,
+        "first_lines": first_lines,
+        "deno_path": shutil.which("deno"),
+        "ytdlp_path": shutil.which("yt-dlp")
+    }
+
+
 @app.get("/api/info")
 async def get_info(request: Request, url: str = Query(...)):
     check_rate_limit(request.client.host)
