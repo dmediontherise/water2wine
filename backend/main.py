@@ -168,7 +168,6 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
         # Enable remote EJS script downloads from GitHub as fallback
         cmd.extend(["--remote-components", "ejs:github"])
 
-        cmd.extend(["--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"])
         cmd.append(yt_url)
 
         # Clean environment to prevent SSLKEYLOGFILE write errors in sandboxed environments
@@ -437,7 +436,6 @@ async def get_info_stream(request: Request, url: str = Query(...)):
                 if node_path:
                     cmd.extend(["--js-runtimes", f"node:{node_path}"])
             cmd.extend(["--remote-components", "ejs:github"])
-            cmd.extend(["--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"])
             cmd.append(url)
             
             # Clean environment to prevent SSLKEYLOGFILE write errors in sandboxed environments
