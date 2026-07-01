@@ -69,10 +69,8 @@ if _cookies_env:
     with open(_cookies_path, "w", encoding="utf-8") as f:
         f.write(_cookies_env)
     _has_cookies = True
-elif os.path.exists(_cookies_path):
-    _has_cookies = True
 else:
-    # Look in the parent directory for cookies files (common in local setups)
+    # Always prioritize fresh cookies from the parent directory (common in local setups)
     _parent_cookies = [
         os.path.join(os.path.dirname(os.path.dirname(__file__)), "cookies.txt"),
         os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_cookies.txt"),
@@ -82,10 +80,13 @@ else:
             try:
                 shutil.copy(p, _cookies_path)
                 _has_cookies = True
-                print(f"[STARTUP] Copied cookies from {p}")
+                print(f"[STARTUP] Overwrote cookies with fresh copy from {p}")
                 break
             except Exception as e:
-                print(f"[STARTUP] Failed to copy cookies from {p}: {e}")
+                print(f"[STARTUP] Failed to copy fresh cookies from {p}: {e}")
+
+    if not _has_cookies and os.path.exists(_cookies_path):
+        _has_cookies = True
 
 print(f"[STARTUP] Cookies file present: {_has_cookies}")
 print(f"[STARTUP] Deno available: {shutil.which('deno')}")
