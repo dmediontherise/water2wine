@@ -299,8 +299,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     hideAllProgress();
                     resetAnalyzeBtn();
                     var msg = data.detail || 'Analysis failed';
-                    if (msg.indexOf('bot') !== -1 || msg.indexOf('429') !== -1 || msg.indexOf('limit') !== -1) {
-                        msg += " (Tip: Run the local backend helper by starting 'start_local.ps1' on your machine to bypass cloud restrictions!)";
+
+
                     }
                     toast(msg, 'error', 12000);
                 } catch (err) {
@@ -378,8 +378,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 hideAllProgress();
                 resetAnalyzeBtn();
                 var msg = error.message;
-                if (msg.indexOf('bot') !== -1 || msg.indexOf('429') !== -1 || msg.indexOf('limit') !== -1) {
-                    msg += " (Tip: Run the local backend helper by starting 'start_local.ps1' on your machine to bypass cloud restrictions!)";
+
+
                 }
                 toast(msg, 'error', 12000);
             });

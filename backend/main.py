@@ -14,8 +14,6 @@ app = FastAPI(title="water2wine API")
 
 @app.on_event("startup")
 async def upgrade_ytdlp_startup():
-    import subprocess
-    import sys
     print("[STARTUP] Upgrading yt-dlp to ensure latest signature decryption...", flush=True)
     try:
         env = os.environ.copy()
@@ -37,13 +35,12 @@ async def upgrade_ytdlp_startup():
         print(f"[STARTUP] Failed to upgrade yt-dlp on startup: {e}", flush=True)
 
 
-# Simple TTL cache for video info (avoids double yt-dlp calls on info→download)
-_info_cache: dict = {}  # url -> {"data": result_stdout, "ts": time.time()}
+# Simple TTL cache for video info (avoids double yt-dlp calls on info->download)
+_info_cache: dict = {}
 INFO_CACHE_TTL = 300  # 5 minutes
 
 def cache_info(url: str, stdout: str):
     _info_cache[url] = {"data": stdout, "ts": time.time()}
-    # Evict stale entries
     now = time.time()
     stale = [k for k, v in _info_cache.items() if now - v["ts"] > INFO_CACHE_TTL]
     for k in stale:
@@ -55,7 +52,6 @@ def get_cached_info(url: str):
         return entry["data"]
     return None
 
-# Ensure Python Scripts dir (where yt-dlp lives) is on PATH
 import shutil
 _scripts = os.path.join(os.path.dirname(sys.executable), "Scripts")
 if _scripts and _scripts not in os.environ.get("PATH", ""):
@@ -70,7 +66,6 @@ if _cookies_env:
         f.write(_cookies_env)
     _has_cookies = True
 else:
-    # Always prioritize fresh cookies from the parent directory (common in local setups)
     _parent_cookies = [
         os.path.join(os.path.dirname(os.path.dirname(__file__)), "cookies.txt"),
         os.path.join(os.path.dirname(os.path.dirname(__file__)), "test_cookies.txt"),
@@ -90,10 +85,14 @@ else:
 
 print(f"[STARTUP] Cookies file present: {_has_cookies}")
 print(f"[STARTUP] Deno available: {shutil.which('deno')}")
+print(f"[STARTUP] Node available: {shutil.which('node')}")
 print(f"[STARTUP] yt-dlp available: {shutil.which('yt-dlp')}")
 
 # CORS Configuration
-allowed_origins = os.getenv("ALLOWED_ORIGIN", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173,https://dmediontherise.github.io").split(",")
+allowed_origins = os.getenv(
+    "ALLOWED_ORIGIN",
+    "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173,https://dmediontherise.github.io"
+).split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -132,20 +131,62 @@ def validate_url(url: str):
     if not YOUTUBE_REGEX.match(url):
         raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
 
+def _get_js_runtime_args() -> list:
+    """Return yt-dlp JS runtime flags for Deno or Node, whichever is found first."""
+    deno_path = shutil.which("deno")
+    if not deno_path and os.path.exists("/usr/local/bin/deno"):
+        deno_path = "/usr/local/bin/deno"
+    elif not deno_path and os.path.exists(os.path.expanduser("~/.deno/bin/deno")):
+        deno_path = os.path.expanduser("~/.deno/bin/deno")
+
+    if deno_path:
+        return ["--js-runtimes", f"deno:{deno_path}"]
+
+    node_path = shutil.which("node")
+    if node_path:
+        return ["--js-runtimes", f"node:{node_path}"]
+
+    return []
+
+def _format_yt_error(error_msg: str) -> str:
+    """Return a user-friendly error string from raw yt-dlp stderr."""
+    if "Sign in to confirm" in error_msg or "not a bot" in error_msg:
+        return (
+            "YouTube bot detection active. "
+            "Set YOUTUBE_COOKIES in your Render environment for server-side auth, "
+            "or run the local backend helper (start_local.ps1) to use your own IP."
+        )
+    if "HTTP Error 429" in error_msg:
+        return (
+            "YouTube is rate-limiting this server IP. "
+            "Run the local backend helper (start_local.ps1) for reliable downloads, "
+            "or set YOUTUBE_COOKIES in your Render environment variables."
+        )
+    return f"yt-dlp error: {error_msg[:300]}"
+
 async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str, user_agent: str = None):
     """
-    Executes yt-dlp with robust fallback strategies.
-    Key insight: iOS and Android clients do NOT support cookies.
-    When cookies are present, we must use only 'web' client.
+    Executes yt-dlp with multiple client fallback strategies.
+
+    Strategy order (optimised for cloud/datacenter IPs):
+      1. tv_embedded  - minimal rate-limiting; works with bgutil visitor PO tokens
+      2. web + cookies (if cookies available)
+      3. tv_embedded + cookies (if cookies available)
+      4. web without cookies (bgutil auto-provides visitor PO tokens)
+      5. mweb  - mobile web, different rate-limit bucket
+      6. tv    - classic TV client
+
+    bgutil-ytdlp-pot-provider is installed as a yt-dlp plugin and auto-supplies
+    PO tokens whenever the bgutil Node server is reachable.
     """
     cookies_file = os.path.join(os.path.dirname(__file__), "cookies.txt")
     has_cookies = os.path.exists(cookies_file)
     best_error_result = None
 
-    def build_and_run(use_cookies=True, player_client="web"):
+    def build_and_run(use_cookies: bool = False, player_client: str = "tv_embedded"):
         cmd = [sys.executable, "-m", "yt_dlp"] + base_cmd
-
         temp_cookies = None
+
         if has_cookies and use_cookies:
             import tempfile
             try:
@@ -158,37 +199,23 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str, user_agent: s
                 print(f"[yt-dlp] Warning: failed to create temp cookies: {e}")
                 cmd.extend(["--cookies", cookies_file])
 
-        # Set player client
         cmd.extend(["--extractor-args", f"youtube:player_client={player_client}"])
-
-        # Use Deno as JS runtime if available, fallback to node
-        deno_path = shutil.which("deno")
-        if not deno_path and os.path.exists("/usr/local/bin/deno"):
-            deno_path = "/usr/local/bin/deno"
-        elif not deno_path and os.path.exists(os.path.expanduser("~/.deno/bin/deno")):
-            deno_path = os.path.expanduser("~/.deno/bin/deno")
-
-        if deno_path:
-            cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
-        else:
-            node_path = shutil.which("node")
-            if node_path:
-                cmd.extend(["--js-runtimes", f"node:{node_path}"])
-
-        # Enable remote EJS script downloads from GitHub as fallback
+        cmd.extend(_get_js_runtime_args())
         cmd.extend(["--remote-components", "ejs:github"])
 
-        # Use browser user agent if provided to ensure cookies validation matches
-        ua_val = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ua_val = (
+            user_agent
+            or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
         cmd.extend(["--user-agent", ua_val])
         cmd.append(yt_url)
 
-        # Clean environment to prevent SSLKEYLOGFILE write errors in sandboxed environments
         env = os.environ.copy()
         if "SSLKEYLOGFILE" in env:
             del env["SSLKEYLOGFILE"]
 
-        print(f"[yt-dlp] Executing: {' '.join(cmd)}")
+        print(f"[yt-dlp] client={player_client} cookies={use_cookies}")
         try:
             return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
         finally:
@@ -196,70 +223,51 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str, user_agent: s
                 try:
                     os.remove(temp_cookies)
                 except Exception as e:
-                    print(f"[yt-dlp] Warning: failed to remove temp cookies {temp_cookies}: {e}")
+                    print(f"[yt-dlp] Warning: failed to remove temp cookies: {e}")
 
-    # Strategy 1: cookies + web-only client (best for cloud servers with cookies)
-    if has_cookies:
-        print("[Strategy 1] Trying: cookies + web client only")
-        result = await asyncio.to_thread(build_and_run, use_cookies=True, player_client="web")
-        if result.returncode == 0:
-            return result
-        best_error_result = result
-        print(f"[Strategy 1] Failed: {result.stderr[:200]}")
+    # Strategy 1: tv_embedded - least restricted on datacenter IPs
+    print("[Strategy 1] tv_embedded (no cookies)")
+    result = await asyncio.to_thread(build_and_run, False, "tv_embedded")
+    if result.returncode == 0:
+        return result
+    best_error_result = result
+    print(f"[Strategy 1] Failed: {result.stderr[:200]}")
 
-    # Strategy 2: cookies + web,tv clients
     if has_cookies:
-        print("[Strategy 2] Trying: cookies + web,tv clients")
-        result = await asyncio.to_thread(build_and_run, use_cookies=True, player_client="web,tv")
+        print("[Strategy 2] web + cookies")
+        result = await asyncio.to_thread(build_and_run, True, "web")
         if result.returncode == 0:
             return result
         best_error_result = result
         print(f"[Strategy 2] Failed: {result.stderr[:200]}")
 
-    # Strategy 3: no cookies, try ios/web/android (for local dev with browser cookies)
-    print("[Strategy 3] Trying: no cookies + ios,web,android clients")
-    result = await asyncio.to_thread(build_and_run, use_cookies=False, player_client="ios,web,android")
+        print("[Strategy 3] tv_embedded + cookies")
+        result = await asyncio.to_thread(build_and_run, True, "tv_embedded")
+        if result.returncode == 0:
+            return result
+        print(f"[Strategy 3] Failed: {result.stderr[:200]}")
+
+    print("[Strategy 4] web (no cookies, bgutil PO tokens)")
+    result = await asyncio.to_thread(build_and_run, False, "web")
     if result.returncode == 0:
         return result
     if best_error_result is None:
         best_error_result = result
-    print(f"[Strategy 3] Failed: {result.stderr[:200]}")
+    print(f"[Strategy 4] Failed: {result.stderr[:200]}")
 
-    # Strategy 4: Try browser cookies (Chrome/Edge/Firefox/Brave/Opera/Vivaldi) - only works on desktop
-    for browser in ["chrome", "edge", "firefox", "brave", "opera", "vivaldi"]:
-        try:
-            cmd = [sys.executable, "-m", "yt_dlp"] + base_cmd
-            cmd.extend(["--cookies-from-browser", browser])
-            cmd.extend(["--extractor-args", "youtube:player_client=ios,web,android"])
-            
-            deno_path = shutil.which("deno")
-            if not deno_path and os.path.exists("/usr/local/bin/deno"):
-                deno_path = "/usr/local/bin/deno"
-            elif not deno_path and os.path.exists(os.path.expanduser("~/.deno/bin/deno")):
-                deno_path = os.path.expanduser("~/.deno/bin/deno")
+    print("[Strategy 5] mweb")
+    result = await asyncio.to_thread(build_and_run, False, "mweb")
+    if result.returncode == 0:
+        return result
+    print(f"[Strategy 5] Failed: {result.stderr[:200]}")
 
-            if deno_path:
-                cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
-            
-            cmd.extend(["--remote-components", "ejs:github"])
-            cmd.append(yt_url)
-            
-            # Clean environment to prevent SSLKEYLOGFILE write errors in sandboxed environments
-            env = os.environ.copy()
-            if "SSLKEYLOGFILE" in env:
-                del env["SSLKEYLOGFILE"]
+    print("[Strategy 6] tv")
+    result = await asyncio.to_thread(build_and_run, False, "tv")
+    if result.returncode == 0:
+        return result
+    print(f"[Strategy 6] Failed: {result.stderr[:200]}")
 
-            print(f"[Strategy 4] Trying: {browser} browser cookies")
-            result = await asyncio.to_thread(lambda: subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120))
-            if result.returncode == 0:
-                return result
-        except Exception as e:
-            print(f"[Strategy 4] {browser} failed: {e}")
-
-    # Return the primary failed result (not browser cookies error)
-    if best_error_result is not None:
-        return best_error_result
-    return result
+    return best_error_result if best_error_result is not None else result
 
 @app.get("/health")
 async def health():
@@ -267,12 +275,11 @@ async def health():
 
 @app.get("/api/debug-cookies")
 async def debug_cookies():
-    import os
     env_cookies = os.environ.get("YOUTUBE_COOKIES", "")
     cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
     exists = os.path.exists(cookies_path)
     size = os.path.getsize(cookies_path) if exists else 0
-    
+
     first_lines = []
     if exists:
         try:
@@ -287,8 +294,7 @@ async def debug_cookies():
                     first_lines.append("\t".join(parts))
         except Exception as e:
             first_lines.append(f"Error reading: {e}")
-            
-    import shutil
+
     return {
         "env_var_present": bool(env_cookies),
         "env_var_length": len(env_cookies),
@@ -296,70 +302,49 @@ async def debug_cookies():
         "file_size": size,
         "first_lines": first_lines,
         "deno_path": shutil.which("deno"),
+        "node_path": shutil.which("node"),
         "ytdlp_path": shutil.which("yt-dlp")
     }
 
 @app.get("/api/test-clients")
 async def test_clients():
-    import subprocess
-    import sys
-    import os
-    import shutil
-    
     cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
     has_cookies = os.path.exists(cookies_path)
-    
     clients = [
-        "web",
-        "web_embedded",
-        "web_music",
-        "android",
-        "android_music",
-        "android_vr",
-        "android_embed",
-        "ios",
-        "ios_music",
-        "tv",
-        "tv_embedded",
-        "web_safari"
+        "web", "web_embedded", "web_music", "android", "android_music",
+        "android_vr", "android_embed", "ios", "ios_music",
+        "tv", "tv_embedded", "web_safari", "mweb"
     ]
-    
     env = os.environ.copy()
     if "SSLKEYLOGFILE" in env:
         del env["SSLKEYLOGFILE"]
-        
-    deno_path = shutil.which("deno")
-    
+    js_args = _get_js_runtime_args()
     results = {}
     for client in clients:
         cmd = [sys.executable, "-m", "yt_dlp", "-J", "--no-playlist", "--flat-playlist"]
         if has_cookies:
             cmd.extend(["--cookies", cookies_path])
-        if deno_path:
-            cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
+        cmd.extend(js_args)
         cmd.extend(["--extractor-args", f"youtube:player_client={client}"])
         cmd.append("https://www.youtube.com/watch?v=NeZYXqp8oTI")
-        
         try:
             res = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=20)
             if res.returncode == 0:
                 results[client] = "SUCCESS"
             else:
-                err = res.stderr.strip()
-                last_line = err.split("\n")[-1] if err else "No error output"
+                last_line = (
+                    res.stderr.strip().split("\n")[-1] if res.stderr.strip() else "No error output"
+                )
                 results[client] = f"FAILED: {last_line}"
         except Exception as e:
             results[client] = f"ERROR: {e}"
-            
     return results
-
 
 
 @app.get("/api/info")
 async def get_info(request: Request, url: str = Query(...), ua: str = Query(None)):
     check_rate_limit(request.client.host)
     validate_url(url)
-    
     try:
         cached = get_cached_info(url)
         if cached:
@@ -367,35 +352,30 @@ async def get_info(request: Request, url: str = Query(...), ua: str = Query(None
         else:
             base_cmd = ["-J", "--no-playlist", "--flat-playlist"]
             result = await execute_ytdlp_with_fallback(base_cmd, url, user_agent=ua)
-
             if result.returncode != 0:
                 error_msg = result.stderr.strip()
                 print(f"yt-dlp final error: {error_msg}")
-                if "Sign in to confirm you're not a bot" in error_msg:
-                    raise HTTPException(status_code=403, detail="YouTube bot detection active. Try COMPLETELY CLOSING Chrome/Edge/Firefox/Brave and trying again, or provide a valid cookies.txt file.")
-                elif "HTTP Error 429" in error_msg:
-                    raise HTTPException(status_code=429, detail="YouTube rate limit (429) active. Try COMPLETELY CLOSING Chrome/Edge/Firefox/Brave and trying again, or provide a valid cookies.txt file.")
-                raise HTTPException(status_code=400, detail=f"yt-dlp error: {error_msg}")
-
+                raise HTTPException(status_code=400, detail=_format_yt_error(error_msg))
             cache_info(url, result.stdout)
             info = json.loads(result.stdout)
+
         duration = info.get("duration", 0)
-        
         formats = [
-            {"id": "mp3-192", "ext": "mp3", "quality": "192k", "size": int(duration * 192000 / 8) if duration else 0, "note": "Audio only"},
-            {"id": "mp4-1080", "ext": "mp4", "quality": "1080p", "size": int(duration * 5000000 / 8) if duration else 0, "note": "High Definition"},
-            {"id": "mp4-720", "ext": "mp4", "quality": "720p", "size": int(duration * 2500000 / 8) if duration else 0, "note": "Standard HD"},
-            {"id": "mp4-360", "ext": "mp4", "quality": "360p", "size": int(duration * 1000000 / 8) if duration else 0, "note": "Standard Definition"}
+            {"id": "mp3-192", "ext": "mp3", "quality": "192k",
+             "size": int(duration * 192000 / 8) if duration else 0, "note": "Audio only"},
+            {"id": "mp4-1080", "ext": "mp4", "quality": "1080p",
+             "size": int(duration * 5000000 / 8) if duration else 0, "note": "High Definition"},
+            {"id": "mp4-720", "ext": "mp4", "quality": "720p",
+             "size": int(duration * 2500000 / 8) if duration else 0, "note": "Standard HD"},
+            {"id": "mp4-360", "ext": "mp4", "quality": "360p",
+             "size": int(duration * 1000000 / 8) if duration else 0, "note": "Standard Definition"}
         ]
-        
         if duration:
-            if duration >= 3600:
-                duration_formatted = time.strftime('%H:%M:%S', time.gmtime(duration))
-            else:
-                duration_formatted = time.strftime('%M:%S', time.gmtime(duration))
+            duration_formatted = time.strftime(
+                '%H:%M:%S' if duration >= 3600 else '%M:%S', time.gmtime(duration)
+            )
         else:
             duration_formatted = "0:00"
-        
         return {
             "title": info.get("title"),
             "thumbnail": info.get("thumbnail"),
@@ -404,170 +384,61 @@ async def get_info(request: Request, url: str = Query(...), ua: str = Query(None
             "channel": info.get("uploader"),
             "formats": formats
         }
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
         print(f"Server error:\n{error_trace}")
-        if isinstance(e, HTTPException):
-            raise e
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}\n{error_trace}")
 
 @app.get("/api/info-stream")
 async def get_info_stream(request: Request, url: str = Query(...), ua: str = Query(None)):
-    """SSE endpoint that streams real-time progress during video analysis."""
+    """SSE endpoint - streams real-time progress during video analysis."""
     check_rate_limit(request.client.host)
     validate_url(url)
 
     async def event_stream():
-        import shutil as _shutil
-
         def send_event(event_type, data):
-            """Format an SSE event."""
             payload = json.dumps(data)
             return f"event: {event_type}\ndata: {payload}\n\n"
 
-        # Phase 1: Validate & initialize
         yield send_event("progress", {"pct": 5, "msg": "Validating YouTube URL..."})
         await asyncio.sleep(0.1)
-
         yield send_event("progress", {"pct": 10, "msg": "Initializing yt-dlp engine..."})
 
-        cookies_file = os.path.join(os.path.dirname(__file__), "cookies.txt")
-        has_cookies = os.path.exists(cookies_file)
+        cached = get_cached_info(url)
+        if cached:
+            yield send_event("progress", {"pct": 80, "msg": "Loading from cache..."})
+            result_stdout = cached
+        else:
+            yield send_event("progress", {"pct": 20, "msg": "Contacting YouTube servers..."})
+            base_cmd = ["-J", "--no-playlist", "--flat-playlist"]
+            result = await execute_ytdlp_with_fallback(base_cmd, url, user_agent=ua)
 
-        base_cmd = ["-J", "--no-playlist", "--flat-playlist"]
+            if result.returncode != 0:
+                error_msg = result.stderr.strip()
+                yield send_event("error_event", {"detail": _format_yt_error(error_msg)})
+                return
 
-        def build_and_run(use_cookies=True, player_client="web"):
-            cmd = [sys.executable, "-m", "yt_dlp"] + base_cmd
-            
-            temp_cookies = None
-            if has_cookies and use_cookies:
-                import tempfile
-                try:
-                    fd, temp_cookies = tempfile.mkstemp(suffix=".txt", prefix="yt_cookies_")
-                    with os.fdopen(fd, "wb") as f_dst:
-                        with open(cookies_file, "rb") as f_src:
-                            f_dst.write(f_src.read())
-                    cmd.extend(["--cookies", temp_cookies])
-                except Exception as e:
-                    print(f"[yt-dlp] Warning: failed to create temp cookies: {e}")
-                    cmd.extend(["--cookies", cookies_file])
-
-            cmd.extend(["--extractor-args", f"youtube:player_client={player_client}"])
-            
-            deno_path = _shutil.which("deno")
-            if not deno_path and os.path.exists("/usr/local/bin/deno"):
-                deno_path = "/usr/local/bin/deno"
-            elif not deno_path and os.path.exists(os.path.expanduser("~/.deno/bin/deno")):
-                deno_path = os.path.expanduser("~/.deno/bin/deno")
-
-            if deno_path:
-                cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
-            else:
-                node_path = _shutil.which("node")
-                if node_path:
-                    cmd.extend(["--js-runtimes", f"node:{node_path}"])
-            cmd.extend(["--remote-components", "ejs:github"])
-            
-            # Use browser user agent if provided to ensure cookies validation matches
-            ua_val = ua or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            cmd.extend(["--user-agent", ua_val])
-            cmd.append(url)
-            
-            # Clean environment to prevent SSLKEYLOGFILE write errors in sandboxed environments
-            env = os.environ.copy()
-            if "SSLKEYLOGFILE" in env:
-                del env["SSLKEYLOGFILE"]
-
-            try:
-                return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
-            finally:
-                if temp_cookies and os.path.exists(temp_cookies):
-                    try:
-                        os.remove(temp_cookies)
-                    except Exception as e:
-                        print(f"[yt-dlp] Warning: failed to remove temp cookies {temp_cookies}: {e}")
-
-        result = None
-        best_error_result = None
-
-        # Phase 2: Try strategies with progress updates
-        if has_cookies:
-            yield send_event("progress", {"pct": 20, "msg": "Authenticating with YouTube..."})
-            result = await asyncio.to_thread(build_and_run, use_cookies=True, player_client="web")
-            if result.returncode == 0:
-                yield send_event("progress", {"pct": 70, "msg": "Extracting video metadata..."})
-            else:
-                best_error_result = result
-                yield send_event("progress", {"pct": 30, "msg": "Trying alternate client..."})
-                result = await asyncio.to_thread(build_and_run, use_cookies=True, player_client="web,tv")
-                if result.returncode != 0:
-                    best_error_result = result
-
-        if result is None or result.returncode != 0:
-            yield send_event("progress", {"pct": 40, "msg": "Contacting YouTube servers..."})
-            result = await asyncio.to_thread(build_and_run, use_cookies=False, player_client="ios,web,android")
-            if result.returncode != 0 and best_error_result is None:
-                best_error_result = result
-
-        if result.returncode != 0:
-            # Try browser cookies
-            for browser in ["chrome", "edge", "firefox", "brave", "opera", "vivaldi"]:
-                yield send_event("progress", {"pct": 55, "msg": f"Trying {browser} session..."})
-                try:
-                    cmd = [sys.executable, "-m", "yt_dlp"] + base_cmd
-                    cmd.extend(["--cookies-from-browser", browser])
-                    cmd.extend(["--extractor-args", "youtube:player_client=ios,web,android"])
-                    
-                    deno_path = _shutil.which("deno")
-                    if not deno_path and os.path.exists("/usr/local/bin/deno"):
-                        deno_path = "/usr/local/bin/deno"
-                    elif not deno_path and os.path.exists(os.path.expanduser("~/.deno/bin/deno")):
-                        deno_path = os.path.expanduser("~/.deno/bin/deno")
-
-                    if deno_path:
-                        cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
-                    cmd.extend(["--remote-components", "ejs:github"])
-                    cmd.append(url)
-                    
-                    # Clean environment to prevent SSLKEYLOGFILE write errors in sandboxed environments
-                    env = os.environ.copy()
-                    if "SSLKEYLOGFILE" in env:
-                        del env["SSLKEYLOGFILE"]
-
-                    result = await asyncio.to_thread(lambda: subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120))
-                    if result.returncode == 0:
-                        break
-                except Exception:
-                    pass
-
-        # Phase 3: Process result
-        if result.returncode != 0:
-            final_err_result = best_error_result if best_error_result is not None else result
-            error_msg = final_err_result.stderr.strip()
-            if "Sign in to confirm you're not a bot" in error_msg:
-                yield send_event("error_event", {"detail": "YouTube bot detection active. Please completely close your browser (Chrome/Edge/Brave) and try again, or export fresh cookies to cookies.txt."})
-            elif "HTTP Error 429" in error_msg:
-                yield send_event("error_event", {"detail": "YouTube rate limit (429) active. Please completely close your browser (Chrome/Edge/Brave) and try again, or export fresh cookies to cookies.txt."})
-            else:
-                yield send_event("error_event", {"detail": f"Analysis failed: {error_msg[:200]}"})
-            return
+            yield send_event("progress", {"pct": 70, "msg": "Extracting video metadata..."})
+            cache_info(url, result.stdout)
+            result_stdout = result.stdout
 
         yield send_event("progress", {"pct": 80, "msg": "Parsing video information..."})
         await asyncio.sleep(0.1)
 
         try:
-            info = json.loads(result.stdout)
+            info = json.loads(result_stdout)
         except json.JSONDecodeError:
             yield send_event("error_event", {"detail": "Failed to parse video data."})
             return
 
         duration = info.get("duration", 0)
         if duration:
-            if duration >= 3600:
-                duration_formatted = time.strftime('%H:%M:%S', time.gmtime(duration))
-            else:
-                duration_formatted = time.strftime('%M:%S', time.gmtime(duration))
+            duration_formatted = time.strftime(
+                '%H:%M:%S' if duration >= 3600 else '%M:%S', time.gmtime(duration)
+            )
         else:
             duration_formatted = "0:00"
 
@@ -581,10 +452,14 @@ async def get_info_stream(request: Request, url: str = Query(...), ua: str = Que
             "duration_formatted": duration_formatted,
             "channel": info.get("uploader"),
             "formats": [
-                {"id": "mp3-192", "ext": "mp3", "quality": "192k", "size": int(duration * 192000 / 8) if duration else 0, "note": "Audio only"},
-                {"id": "mp4-1080", "ext": "mp4", "quality": "1080p", "size": int(duration * 5000000 / 8) if duration else 0, "note": "High Definition"},
-                {"id": "mp4-720", "ext": "mp4", "quality": "720p", "size": int(duration * 2500000 / 8) if duration else 0, "note": "Standard HD"},
-                {"id": "mp4-360", "ext": "mp4", "quality": "360p", "size": int(duration * 1000000 / 8) if duration else 0, "note": "Standard Definition"}
+                {"id": "mp3-192", "ext": "mp3", "quality": "192k",
+                 "size": int(duration * 192000 / 8) if duration else 0, "note": "Audio only"},
+                {"id": "mp4-1080", "ext": "mp4", "quality": "1080p",
+                 "size": int(duration * 5000000 / 8) if duration else 0, "note": "High Definition"},
+                {"id": "mp4-720", "ext": "mp4", "quality": "720p",
+                 "size": int(duration * 2500000 / 8) if duration else 0, "note": "Standard HD"},
+                {"id": "mp4-360", "ext": "mp4", "quality": "360p",
+                 "size": int(duration * 1000000 / 8) if duration else 0, "note": "Standard Definition"}
             ]
         }
 
@@ -602,15 +477,21 @@ async def get_info_stream(request: Request, url: str = Query(...), ua: str = Que
     )
 
 @app.get("/api/download")
-async def download(request: Request, url: str = Query(...), format: str = Query(...), quality: str = Query(None), title: str = Query("video"), duration: float = Query(0), ua: str = Query(None)):
+async def download(
+    request: Request,
+    url: str = Query(...),
+    format: str = Query(...),
+    quality: str = Query(None),
+    title: str = Query("video"),
+    duration: float = Query(0),
+    ua: str = Query(None)
+):
     check_rate_limit(request.client.host)
     validate_url(url)
-    
     ffmpeg_path = shutil.which("ffmpeg") or "ffmpeg"
     safe_title = sanitize_filename(title)
-    
+
     if format == "mp3":
-        # Parse bitrate from quality param (e.g. "192k" -> 192, "320k" -> 320)
         bitrate_kbps = 192
         if quality:
             try:
@@ -620,7 +501,6 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
         if bitrate_kbps not in (128, 192, 320):
             bitrate_kbps = 192
 
-        # Get stream URL for best audio
         base_cmd = ["-g", "-f", "bestaudio/best", "--no-playlist"]
         result = await execute_ytdlp_with_fallback(base_cmd, url, user_agent=ua)
         if result.returncode != 0:
@@ -631,10 +511,12 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
             raise HTTPException(status_code=404, detail="No suitable streams found")
 
         audio_url = stream_urls[0]
-        ffmpeg_cmd = [ffmpeg_path, "-i", audio_url, "-f", "mp3", "-acodec", "libmp3lame", "-ab", f"{bitrate_kbps}k", "pipe:1"]
-
+        ffmpeg_cmd = [
+            ffmpeg_path, "-i", audio_url,
+            "-f", "mp3", "-acodec", "libmp3lame", "-ab", f"{bitrate_kbps}k",
+            "pipe:1"
+        ]
         filename = f"{safe_title}.mp3"
-        media_type = "audio/mpeg"
 
         async def stream_media():
             p = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -649,23 +531,20 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
                     p.terminate()
                     p.wait()
 
-        # Don't set Content-Length for streamed transcoded output — the actual
-        # size is unknown until ffmpeg finishes.  An incorrect Content-Length
-        # causes browsers to report a corrupt / incomplete download.
-        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-
         return StreamingResponse(
             stream_media(),
-            media_type=media_type,
-            headers=headers
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
         )
-        
+
     elif format == "mp4":
         height = quality.replace("p", "") if quality else "1080"
-
-        base_cmd = ["-g", "-f", f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", "--no-playlist"]
+        base_cmd = [
+            "-g",
+            "-f", f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--no-playlist"
+        ]
         result = await execute_ytdlp_with_fallback(base_cmd, url, user_agent=ua)
-
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail=f"Failed to extract stream URLs: {result.stderr}")
 
@@ -683,9 +562,7 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
                 ffmpeg_path, "-i", stream_urls[0],
                 "-c", "copy", "-f", "mp4", "-movflags", "frag_keyframe+empty_moov", "pipe:1"
             ]
-
         filename = f"{safe_title}.mp4"
-        media_type = "video/mp4"
 
         async def stream_media():
             p = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -700,14 +577,12 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
                     p.terminate()
                     p.wait()
 
-        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-
         return StreamingResponse(
             stream_media(),
-            media_type=media_type,
-            headers=headers
+            media_type="video/mp4",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
         )
-    
+
     else:
         raise HTTPException(status_code=400, detail="Unsupported format. Use 'mp3' or 'mp4'.")
 
