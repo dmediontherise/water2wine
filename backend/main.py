@@ -280,6 +280,61 @@ async def debug_cookies():
         "ytdlp_path": shutil.which("yt-dlp")
     }
 
+@app.get("/api/test-clients")
+async def test_clients():
+    import subprocess
+    import sys
+    import os
+    import shutil
+    
+    cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
+    has_cookies = os.path.exists(cookies_path)
+    
+    clients = [
+        "web",
+        "web_embedded",
+        "web_music",
+        "android",
+        "android_music",
+        "android_vr",
+        "android_embed",
+        "ios",
+        "ios_music",
+        "tv",
+        "tv_embedded",
+        "web_safari"
+    ]
+    
+    env = os.environ.copy()
+    if "SSLKEYLOGFILE" in env:
+        del env["SSLKEYLOGFILE"]
+        
+    deno_path = shutil.which("deno")
+    
+    results = {}
+    for client in clients:
+        cmd = [sys.executable, "-m", "yt_dlp", "-J", "--no-playlist", "--flat-playlist"]
+        if has_cookies:
+            cmd.extend(["--cookies", cookies_path])
+        if deno_path:
+            cmd.extend(["--js-runtimes", f"deno:{deno_path}"])
+        cmd.extend(["--extractor-args", f"youtube:player_client={client}"])
+        cmd.append("https://www.youtube.com/watch?v=NeZYXqp8oTI")
+        
+        try:
+            res = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=20)
+            if res.returncode == 0:
+                results[client] = "SUCCESS"
+            else:
+                err = res.stderr.strip()
+                last_line = err.split("\n")[-1] if err else "No error output"
+                results[client] = f"FAILED: {last_line}"
+        except Exception as e:
+            results[client] = f"ERROR: {e}"
+            
+    return results
+
+
 
 @app.get("/api/info")
 async def get_info(request: Request, url: str = Query(...)):
