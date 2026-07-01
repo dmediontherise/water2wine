@@ -241,7 +241,7 @@ document.addEventListener('DOMContentLoaded', function() {
         showProcessing('Connecting to server...');
         previewSection.classList.add('hidden');
 
-        var sseUrl = API_BASE + '/api/info-stream?url=' + encodeURIComponent(url);
+        var sseUrl = API_BASE + '/api/info-stream?url=' + encodeURIComponent(url) + '&ua=' + encodeURIComponent(navigator.userAgent);
 
         // Try SSE first for real-time progress
         if (typeof EventSource !== 'undefined') {
@@ -338,7 +338,7 @@ document.addEventListener('DOMContentLoaded', function() {
             return setTimeout(function() { updateProcessing(p.pct, p.msg); }, p.delay);
         });
 
-        fetch(API_BASE + '/api/info?url=' + encodeURIComponent(url))
+        fetch(API_BASE + '/api/info?url=' + encodeURIComponent(url) + '&ua=' + encodeURIComponent(navigator.userAgent))
             .then(function(response) {
                 timers.forEach(clearTimeout);
                 if (!response.ok) {
@@ -404,7 +404,8 @@ document.addEventListener('DOMContentLoaded', function() {
         var filename = safeTitle + '.' + ext;
         var downloadUrl = API_BASE + '/api/download?url=' + encodeURIComponent(url) +
             '&format=' + format + '&quality=' + quality +
-            '&title=' + encodeURIComponent(title) + '&duration=' + duration;
+            '&title=' + encodeURIComponent(title) + '&duration=' + duration +
+            '&ua=' + encodeURIComponent(navigator.userAgent);
 
         // Show processing indicator
         showProcessing('Sending request to server...');

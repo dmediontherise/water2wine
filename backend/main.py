@@ -92,7 +92,7 @@ print(f"[STARTUP] Deno available: {shutil.which('deno')}")
 print(f"[STARTUP] yt-dlp available: {shutil.which('yt-dlp')}")
 
 # CORS Configuration
-allowed_origins = os.getenv("ALLOWED_ORIGIN", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173").split(",")
+allowed_origins = os.getenv("ALLOWED_ORIGIN", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173,https://dmediontherise.github.io").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -131,7 +131,7 @@ def validate_url(url: str):
     if not YOUTUBE_REGEX.match(url):
         raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
 
-async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
+async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str, user_agent: str = None):
     """
     Executes yt-dlp with robust fallback strategies.
     Key insight: iOS and Android clients do NOT support cookies.
@@ -168,6 +168,9 @@ async def execute_ytdlp_with_fallback(base_cmd: list, yt_url: str):
         # Enable remote EJS script downloads from GitHub as fallback
         cmd.extend(["--remote-components", "ejs:github"])
 
+        # Use browser user agent if provided to ensure cookies validation matches
+        ua_val = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        cmd.extend(["--user-agent", ua_val])
         cmd.append(yt_url)
 
         # Clean environment to prevent SSLKEYLOGFILE write errors in sandboxed environments
@@ -336,7 +339,7 @@ async def test_clients():
 
 
 @app.get("/api/info")
-async def get_info(request: Request, url: str = Query(...)):
+async def get_info(request: Request, url: str = Query(...), ua: str = Query(None)):
     check_rate_limit(request.client.host)
     validate_url(url)
     
@@ -346,7 +349,7 @@ async def get_info(request: Request, url: str = Query(...)):
             info = json.loads(cached)
         else:
             base_cmd = ["-J", "--no-playlist", "--flat-playlist"]
-            result = await execute_ytdlp_with_fallback(base_cmd, url)
+            result = await execute_ytdlp_with_fallback(base_cmd, url, user_agent=ua)
 
             if result.returncode != 0:
                 error_msg = result.stderr.strip()
@@ -393,7 +396,7 @@ async def get_info(request: Request, url: str = Query(...)):
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}\n{error_trace}")
 
 @app.get("/api/info-stream")
-async def get_info_stream(request: Request, url: str = Query(...)):
+async def get_info_stream(request: Request, url: str = Query(...), ua: str = Query(None)):
     """SSE endpoint that streams real-time progress during video analysis."""
     check_rate_limit(request.client.host)
     validate_url(url)
@@ -436,6 +439,10 @@ async def get_info_stream(request: Request, url: str = Query(...)):
                 if node_path:
                     cmd.extend(["--js-runtimes", f"node:{node_path}"])
             cmd.extend(["--remote-components", "ejs:github"])
+            
+            # Use browser user agent if provided to ensure cookies validation matches
+            ua_val = ua or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            cmd.extend(["--user-agent", ua_val])
             cmd.append(url)
             
             # Clean environment to prevent SSLKEYLOGFILE write errors in sandboxed environments
@@ -559,7 +566,7 @@ async def get_info_stream(request: Request, url: str = Query(...)):
     )
 
 @app.get("/api/download")
-async def download(request: Request, url: str = Query(...), format: str = Query(...), quality: str = Query(None), title: str = Query("video"), duration: float = Query(0)):
+async def download(request: Request, url: str = Query(...), format: str = Query(...), quality: str = Query(None), title: str = Query("video"), duration: float = Query(0), ua: str = Query(None)):
     check_rate_limit(request.client.host)
     validate_url(url)
     
@@ -579,7 +586,7 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
 
         # Get stream URL for best audio
         base_cmd = ["-g", "-f", "bestaudio/best", "--no-playlist"]
-        result = await execute_ytdlp_with_fallback(base_cmd, url)
+        result = await execute_ytdlp_with_fallback(base_cmd, url, user_agent=ua)
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail=f"Failed to extract stream URL: {result.stderr}")
 
@@ -621,7 +628,7 @@ async def download(request: Request, url: str = Query(...), format: str = Query(
         height = quality.replace("p", "") if quality else "1080"
 
         base_cmd = ["-g", "-f", f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", "--no-playlist"]
-        result = await execute_ytdlp_with_fallback(base_cmd, url)
+        result = await execute_ytdlp_with_fallback(base_cmd, url, user_agent=ua)
 
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail=f"Failed to extract stream URLs: {result.stderr}")
