@@ -303,8 +303,34 @@ async def debug_cookies():
         "first_lines": first_lines,
         "deno_path": shutil.which("deno"),
         "node_path": shutil.which("node"),
-        "ytdlp_path": shutil.which("yt-dlp")
+        "ytdlp_path": shutil.which("yt-dlp"),
+        "pot_provider_script_present": os.path.isfile(
+            os.path.expanduser("~/bgutil-ytdlp-pot-provider/server/src/generate_once.ts")
+        ),
+        "pot_provider_node_modules_present": os.path.isdir(
+            os.path.expanduser("~/bgutil-ytdlp-pot-provider/server/node_modules")
+        )
     }
+
+@app.get("/api/pot-check")
+async def pot_check():
+    """Verifies the bgutil PO Token provider plugin is registered with yt-dlp."""
+    env = os.environ.copy()
+    if "SSLKEYLOGFILE" in env:
+        del env["SSLKEYLOGFILE"]
+
+    cmd = [sys.executable, "-m", "yt_dlp", "-v", "--simulate", "--skip-download", "test:youtube_3"]
+    try:
+        res = await asyncio.to_thread(subprocess.run, cmd, env=env, capture_output=True, text=True, timeout=30)
+        output = res.stdout + res.stderr
+        pot_lines = [line.strip() for line in output.splitlines() if "PO Token Providers" in line]
+        jsc_lines = [line.strip() for line in output.splitlines() if "JS Challenge Providers" in line]
+        return {
+            "po_token_providers": pot_lines[0] if pot_lines else "NOT FOUND in output",
+            "js_challenge_providers": jsc_lines[0] if jsc_lines else "NOT FOUND in output",
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/api/test-clients")
 async def test_clients():
