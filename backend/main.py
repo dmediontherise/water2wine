@@ -34,6 +34,41 @@ async def upgrade_ytdlp_startup():
     except Exception as e:
         print(f"[STARTUP] Failed to upgrade yt-dlp on startup: {e}", flush=True)
 
+_pot_server_process = None
+
+@app.on_event("startup")
+def start_pot_server():
+    """Starts the bgutil PO Token provider as a long-lived HTTP server.
+
+    Script mode spawns a fresh Deno process (loading canvas/node_modules from
+    scratch) for every yt-dlp client attempted, and execute_ytdlp_with_fallback
+    tries up to 6 clients per request - stacking enough concurrent Deno
+    processes to OOM-crash the whole container on Render's free tier. The
+    HTTP server pays that startup cost once here instead.
+    """
+    global _pot_server_process
+    import shutil as _shutil
+    server_dir = os.path.expanduser("~/bgutil-ytdlp-pot-provider/server")
+    main_ts = os.path.join(server_dir, "src", "main.ts")
+    node_modules = os.path.join(server_dir, "node_modules")
+    if not os.path.isfile(main_ts):
+        print(f"[STARTUP] bgutil PO token server script not found at {main_ts}, skipping.", flush=True)
+        return
+    deno_path = _shutil.which("deno") or "/usr/local/bin/deno"
+    cmd = [
+        deno_path, "run", "--allow-env", "--allow-net",
+        f"--allow-ffi={node_modules}", f"--allow-read={node_modules}",
+        main_ts,
+    ]
+    env = os.environ.copy()
+    env["DENO_NO_PROMPT"] = "1"
+    env["DENO_NO_UPDATE_CHECK"] = "1"
+    try:
+        _pot_server_process = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"[STARTUP] bgutil PO token HTTP server started (pid {_pot_server_process.pid}).", flush=True)
+    except Exception as e:
+        print(f"[STARTUP] Failed to start bgutil PO token server: {e}", flush=True)
+
 
 # Simple TTL cache for video info (avoids double yt-dlp calls on info->download)
 _info_cache: dict = {}
@@ -309,7 +344,8 @@ async def debug_cookies():
         ),
         "pot_provider_node_modules_present": os.path.isdir(
             os.path.expanduser("~/bgutil-ytdlp-pot-provider/server/node_modules")
-        )
+        ),
+        "pot_server_process_alive": _pot_server_process is not None and _pot_server_process.poll() is None
     }
 
 @app.get("/api/pot-check")
